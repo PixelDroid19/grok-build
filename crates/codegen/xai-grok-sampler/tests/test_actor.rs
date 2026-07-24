@@ -6,14 +6,14 @@
 //! payloads come from `xai_grok_test_support::sse`.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use axum::Router;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
-use axum::Router;
 use futures_util::stream::{self, StreamExt};
 use indexmap::IndexMap;
 use serde_json::json;
@@ -27,7 +27,7 @@ use xai_grok_sampler::{
 use xai_grok_sampling_types::{
     ConversationItem, ConversationRequest, DoomLoopRecoveryPolicy, UserItem,
 };
-use xai_grok_test_support::{sse, SseEvent};
+use xai_grok_test_support::{SseEvent, sse};
 
 // ---------------------------------------------------------------------------
 // Mock server harness
@@ -193,9 +193,11 @@ async fn submit_emits_started_first_token_channel_completed() {
     server.shutdown();
 
     assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, SamplingEvent::FirstToken { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, SamplingEvent::FirstToken { .. }))
+    );
 
     let texts: Vec<&str> = events
         .iter()
@@ -529,9 +531,11 @@ async fn auth_401_emits_failed_immediately_no_retry() {
     // Auth errors are session-owned -- `classify_error` returns
     // `EmitToSession` so the actor emits Failed immediately without
     // retrying.
-    assert!(!events
-        .iter()
-        .any(|e| matches!(e, SamplingEvent::Retrying { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SamplingEvent::Retrying { .. }))
+    );
     match events.last().unwrap() {
         SamplingEvent::Failed { error, .. } => {
             assert_eq!(error.kind, SamplingErrorKind::Auth);

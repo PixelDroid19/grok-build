@@ -722,6 +722,7 @@ async fn read_parent_sampling_config(
                 api_key: creds.api_key,
                 base_url: cfg.base_url,
                 model: cfg.model.clone(),
+                provider_id: cfg.provider_id,
                 max_completion_tokens: cfg.max_completion_tokens,
                 temperature: cfg.temperature,
                 top_p: cfg.top_p,

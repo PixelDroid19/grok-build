@@ -1034,6 +1034,10 @@ impl ApiBackend {
 pub struct SamplingConfig {
     pub base_url: String,
     pub model: String,
+    /// Stable logical provider identity. This is persisted with the session so
+    /// model switches do not have to infer a provider from a mutable URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,

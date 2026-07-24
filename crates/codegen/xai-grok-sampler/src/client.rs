@@ -2254,10 +2254,7 @@ mod tests {
         let template = EndpointTemplate::new("https://opencode.ai/zen/go/v1", &IndexMap::new());
         let chat_url = template.url_for_path("/chat/completions");
         let responses_url = template.url_for_path("responses");
-        assert_eq!(
-            chat_url,
-            "https://opencode.ai/zen/go/v1/chat/completions"
-        );
+        assert_eq!(chat_url, "https://opencode.ai/zen/go/v1/chat/completions");
         assert_eq!(responses_url, "https://opencode.ai/zen/go/v1/responses");
     }
 

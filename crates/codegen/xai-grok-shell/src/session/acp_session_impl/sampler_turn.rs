@@ -427,6 +427,7 @@ impl SessionActor {
             .unwrap_or_else(|| xai_grok_sampling_types::SamplingConfig {
                 base_url: String::new(),
                 model: String::new(),
+                provider_id: None,
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
@@ -438,7 +439,7 @@ impl SessionActor {
                 reasoning_effort: None,
                 stream_tool_calls: None,
             });
-        let creds = self.chat_state_handle.get_credentials().await;
+        let mut creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
         let auth_method = self.auth_method_id.load();
         let gate =
@@ -450,6 +451,31 @@ impl SessionActor {
         }
         let auth_scheme = model_facts.auth_scheme;
         let mut extra_headers = cfg.extra_headers;
+        if cfg.provider_id.as_deref() == Some("openai") {
+            let auth =
+                crate::auth::openai_subscription::manager::OpenAiSubscriptionAuthManager::new(
+                    crate::auth::openai_subscription::storage::OpenAiAuthStorage::new(
+                        &crate::util::grok_home::grok_home(),
+                    ),
+                    crate::auth::openai_subscription::model::OpenAiEndpoints::default(),
+                );
+            match auth.current_bearer().await {
+                Ok(bearer) => {
+                    creds.api_key = Some(bearer.access_token);
+                    if let Some(account_id) = bearer.account_id {
+                        extra_headers.insert("ChatGPT-Account-Id".to_owned(), account_id);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        provider = "openai",
+                        error = %error,
+                        "OpenAI subscription credentials are unavailable for the selected model"
+                    );
+                    creds.api_key = None;
+                }
+            }
+        }
         crate::agent::config::inject_url_derived_headers(
             &mut extra_headers,
             creds.alpha_test_key.as_deref(),
@@ -483,6 +509,7 @@ impl SessionActor {
             api_key: creds.api_key,
             base_url: cfg.base_url,
             model: cfg.model,
+            provider_id: cfg.provider_id,
             max_completion_tokens: cfg.max_completion_tokens,
             temperature: cfg.temperature,
             top_p: cfg.top_p,

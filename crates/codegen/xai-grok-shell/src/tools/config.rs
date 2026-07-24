@@ -214,6 +214,7 @@ impl ShellToolsetConfig {
             api_key: None,
             base_url: "https://api.x.ai/v1".to_string(),
             model: String::new(),
+            provider_id: Some("xai".to_owned()),
             max_completion_tokens: None,
             temperature: None,
             top_p: None,

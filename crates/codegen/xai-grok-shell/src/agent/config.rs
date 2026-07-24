@@ -5137,6 +5137,7 @@ pub fn sampling_config_for_model(
         api_key: credentials.api_key,
         model: model_name,
         base_url: credentials.base_url,
+        provider_id: info.provider_id.as_ref().map(ToString::to_string),
         max_completion_tokens,
         temperature,
         top_p,
