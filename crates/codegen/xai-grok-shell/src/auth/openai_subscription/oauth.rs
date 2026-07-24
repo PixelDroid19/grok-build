@@ -1,6 +1,13 @@
 use std::collections::HashMap;
 use std::time::Duration as StdDuration;
 
+use axum::{
+    Router,
+    extract::{Query, State},
+    http::StatusCode,
+    response::{Html, IntoResponse},
+    routing::get,
+};
 use base64::Engine;
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 use serde::Deserialize;
@@ -11,6 +18,10 @@ use tokio_util::sync::CancellationToken;
 use super::model::{
     CLIENT_ID, OpenAiAuthError, OpenAiEndpoints, TokenResponse, default_redirect_uri,
 };
+
+const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+const OAUTH_POLLING_SAFETY_MARGIN_MS: u64 = 3000;
+const OAUTH_CALLBACK_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PkceCodes {
@@ -33,6 +44,12 @@ pub struct BrowserAuthorization {
     pub state: String,
 }
 
+#[derive(Clone)]
+struct CallbackState {
+    expected_state: String,
+    tx: tokio::sync::mpsc::Sender<Result<String, OpenAiAuthError>>,
+}
+
 #[derive(Debug, Deserialize)]
 struct DeviceAuthorizationResponse {
     device_auth_id: String,
@@ -53,7 +70,6 @@ struct ErrorResponse {
 }
 
 pub fn generate_pkce() -> PkceCodes {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     let bytes: [u8; 43] = rand::random();
     let verifier: String = bytes
         .iter()
@@ -122,6 +138,118 @@ pub fn parse_callback_params(
         ));
     }
     Ok(code.clone())
+}
+
+fn callback_page(message: &str) -> Html<String> {
+    Html(format!(
+        r#"<!doctype html><html><body><h1>Grok Build</h1><p>{message}</p></body></html>"#
+    ))
+}
+
+async fn handle_callback(
+    State(state): State<CallbackState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    match parse_callback_params(&params, &state.expected_state) {
+        Ok(code) => {
+            let _ = state.tx.try_send(Ok(code));
+            (
+                StatusCode::OK,
+                callback_page("Authorization complete. You can close this page now."),
+            )
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let _ = state.tx.try_send(Err(error));
+            (
+                StatusCode::BAD_REQUEST,
+                callback_page(&format!("Authorization failed: {message}")),
+            )
+        }
+    }
+}
+
+pub async fn wait_for_browser_callback(
+    redirect_uri: &str,
+    expected_state: &str,
+    cancel: CancellationToken,
+    timeout: StdDuration,
+) -> Result<String, OpenAiAuthError> {
+    let parsed = url::Url::parse(redirect_uri)
+        .map_err(|_| OpenAiAuthError::Callback("invalid callback URI".to_owned()))?;
+    let host = parsed.host_str().unwrap_or("127.0.0.1").to_owned();
+    let port = parsed.port().unwrap_or(1455);
+    let path = parsed.path().to_owned();
+
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
+        .await
+        .map_err(|error| OpenAiAuthError::Callback(error.to_string()))?;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<String, OpenAiAuthError>>(1);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let app = Router::new()
+        .route(&path, get(handle_callback))
+        .with_state(CallbackState {
+            expected_state: expected_state.to_owned(),
+            tx: tx.clone(),
+        });
+
+    let serve = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    let result = tokio::select! {
+        result = tokio::time::timeout(timeout, rx.recv()) => match result {
+            Ok(Some(result)) => result,
+            Ok(None) => Err(OpenAiAuthError::Callback("OAuth callback channel closed".to_owned())),
+            Err(_) => Err(OpenAiAuthError::Callback("OAuth callback timed out".to_owned())),
+        },
+        _ = cancel.cancelled() => Err(OpenAiAuthError::Cancelled),
+    };
+
+    let _ = shutdown_tx.send(());
+    let _ = serve.await;
+    result
+}
+
+pub async fn wait_for_browser_callback_default(
+    redirect_uri: &str,
+    expected_state: &str,
+    cancel: CancellationToken,
+) -> Result<String, OpenAiAuthError> {
+    wait_for_browser_callback(
+        redirect_uri,
+        expected_state,
+        cancel,
+        StdDuration::from_millis(OAUTH_CALLBACK_TIMEOUT_MS),
+    )
+    .await
+}
+
+pub async fn wait_and_exchange_browser_callback(
+    endpoints: &OpenAiEndpoints,
+    pkce: PkceCodes,
+    state: impl Into<String>,
+    redirect_uri: &str,
+    open_in_browser: bool,
+    timeout: StdDuration,
+    cancel: CancellationToken,
+) -> Result<TokenResponse, OpenAiAuthError> {
+    let state = state.into();
+    if open_in_browser {
+        let auth_url = build_authorize_url(endpoints, &pkce, &state);
+        webbrowser::open(&auth_url).map_err(|error| {
+            OpenAiAuthError::Callback(format!("failed to open browser: {error}"))
+        })?;
+    }
+
+    let code = wait_for_browser_callback(redirect_uri, &state, cancel, timeout).await?;
+    exchange_code_for_tokens(endpoints, &code, redirect_uri, &pkce).await
 }
 
 pub async fn exchange_code_for_tokens(
@@ -213,13 +341,20 @@ pub async fn exchange_device_authorization(
 
         let status = response.status();
         let error = parse_error_body(response).await;
-        if error.as_deref() == Some("authorization_pending") {
+        if error.as_deref() == Some("authorization_pending")
+            || status == reqwest::StatusCode::FORBIDDEN
+            || status == reqwest::StatusCode::NOT_FOUND
+        {
             tokio::select! {
                 _ = cancel.cancelled() => return Err(OpenAiAuthError::Cancelled),
-                _ = tokio::time::sleep(StdDuration::from_secs(auth.interval_seconds)) => {}
+                _ = tokio::time::sleep(
+                    StdDuration::from_secs(auth.interval_seconds)
+                        + StdDuration::from_millis(OAUTH_POLLING_SAFETY_MARGIN_MS)
+                ) => {}
             }
             continue;
         }
+
         return Err(OpenAiAuthError::Http {
             status: status.as_u16(),
             message: error.unwrap_or_else(|| status.to_string()),

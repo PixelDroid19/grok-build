@@ -1,10 +1,13 @@
+use std::collections::HashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use reqwest::Client;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -17,12 +20,22 @@ use super::model::{
 use super::oauth::{
     DeviceAuthorization, build_authorize_url, build_browser_authorization,
     exchange_device_authorization, extract_account_id, generate_pkce, parse_callback_params,
-    request_device_authorization,
+    request_device_authorization, wait_for_browser_callback,
 };
 use super::storage::OpenAiAuthStorage;
 
+async fn send_callback_request(url: &str) {
+    for _ in 0..30 {
+        if Client::new().get(url).send().await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("callback request never reached local listener");
+}
+
 fn unsigned_jwt(claims: serde_json::Value) -> String {
-    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#);
+    let header = URL_SAFE_NO_PAD.encode(r#"{\"alg\":\"none\"}"#);
     let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
     format!("{header}.{payload}.")
 }
@@ -151,6 +164,80 @@ fn callback_params_require_matching_state_and_surface_oauth_errors() {
             .to_string()
             .contains("state")
     );
+}
+
+#[tokio::test]
+async fn browser_callback_listener_returns_code_on_success() {
+    let redirect_uri = "http://127.0.0.1:17771/auth/callback";
+    let token = CancellationToken::new();
+    let callback = tokio::spawn(wait_for_browser_callback(
+        redirect_uri,
+        "state-success",
+        token,
+        Duration::from_secs(2),
+    ));
+
+    let callback_url = format!("{redirect_uri}?code=auth-code-success&state=state-success");
+    send_callback_request(&callback_url).await;
+    let response = Client::new().get(&callback_url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let code = callback.await.unwrap().unwrap();
+    assert_eq!(code, "auth-code-success");
+}
+
+#[tokio::test]
+async fn browser_callback_listener_reports_state_mismatch() {
+    let redirect_uri = "http://127.0.0.1:17772/auth/callback";
+    let token = CancellationToken::new();
+    let callback = tokio::spawn(wait_for_browser_callback(
+        redirect_uri,
+        "expected-state",
+        token,
+        Duration::from_secs(2),
+    ));
+
+    let callback_url = format!("{redirect_uri}?code=auth-code&state=wrong-state");
+    send_callback_request(&callback_url).await;
+    let response = Client::new().get(&callback_url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let err = callback.await.unwrap().unwrap_err();
+    assert!(err.to_string().contains("state"));
+}
+
+#[tokio::test]
+async fn browser_callback_listener_times_out() {
+    let redirect_uri = "http://127.0.0.1:17773/auth/callback";
+    let token = CancellationToken::new();
+    let err = wait_for_browser_callback(
+        redirect_uri,
+        "state-timeout",
+        token,
+        Duration::from_millis(150),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("timed out"));
+}
+
+#[tokio::test]
+async fn browser_callback_listener_cancels_with_token() {
+    let redirect_uri = "http://127.0.0.1:17774/auth/callback";
+    let token = CancellationToken::new();
+    let callback = tokio::spawn(wait_for_browser_callback(
+        redirect_uri,
+        "state-cancel",
+        token.clone(),
+        Duration::from_secs(2),
+    ));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    token.cancel();
+
+    let err = callback.await.unwrap().unwrap_err();
+    assert!(err.to_string().contains("cancelled"));
 }
 
 #[test]
@@ -319,6 +406,32 @@ async fn headless_device_flow_surfaces_error_response_and_skips_oauth_exchange()
     assert_eq!(server.oauth_exchanges.load(Ordering::SeqCst), 0);
 }
 
+#[tokio::test]
+async fn headless_device_flow_treats_403_and_404_as_pending() {
+    for status in [StatusCode::FORBIDDEN, StatusCode::NOT_FOUND] {
+        let server = DeviceServer::start(DeviceMode::PendingNoBody(status)).await;
+        let auth = DeviceAuthorization {
+            device_auth_id: "device-1".into(),
+            user_code: "CODE-1".into(),
+            interval_seconds: 1,
+        };
+        let cancel = CancellationToken::new();
+
+        let exchange = tokio::spawn(exchange_device_authorization(
+            &server.endpoints(),
+            auth,
+            cancel.clone(),
+        ));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!exchange.is_finished());
+
+        cancel.cancel();
+        let err = exchange.await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("cancelled"));
+        assert!(server.token_polls.load(Ordering::SeqCst) >= 1);
+    }
+}
+
 #[test]
 fn exported_defaults_match_openai_subscription_reference() {
     assert_eq!(ISSUER, "https://auth.openai.com");
@@ -369,6 +482,7 @@ async fn refresh_handler(State(calls): State<Arc<AtomicUsize>>) -> impl IntoResp
 #[derive(Clone, Copy)]
 enum DeviceMode {
     Pending,
+    PendingNoBody(StatusCode),
     Denied,
     Approved,
 }
@@ -378,6 +492,7 @@ struct DeviceServer {
     user_code_requests: Arc<AtomicUsize>,
     token_polls: Arc<AtomicUsize>,
     oauth_exchanges: Arc<AtomicUsize>,
+    mode: DeviceMode,
 }
 
 struct DeviceState {
@@ -416,6 +531,7 @@ impl DeviceServer {
             user_code_requests,
             token_polls,
             oauth_exchanges,
+            mode,
         }
     }
 
@@ -439,18 +555,22 @@ async fn device_token_handler(State(state): State<Arc<DeviceState>>) -> impl Int
         DeviceMode::Pending => (
             StatusCode::ACCEPTED,
             Json(json!({ "error": "authorization_pending" })),
-        ),
+        )
+            .into_response(),
         DeviceMode::Denied => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "access_denied" })),
-        ),
+        )
+            .into_response(),
         DeviceMode::Approved => (
             StatusCode::OK,
             Json(json!({
                 "authorization_code": "authorization-code",
                 "code_verifier": "device-code-verifier"
             })),
-        ),
+        )
+            .into_response(),
+        DeviceMode::PendingNoBody(status) => (status, Json(json!({}))).into_response(),
     }
 }
 

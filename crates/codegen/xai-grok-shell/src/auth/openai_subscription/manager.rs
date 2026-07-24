@@ -77,16 +77,27 @@ impl OpenAiSubscriptionAuthManager {
             return Ok(to_bearer(current));
         }
 
-        let _file_lock = self.storage.lock()?;
-        let (refresh_token, previous_account_id) = match self.storage.read_locked()? {
-            Some(current) if !current.is_expired_at(Utc::now()) => return Ok(to_bearer(current)),
-            Some(current) => (current.refresh_token, current.account_id),
-            None => (refresh_token, None),
+        let (refresh_token, previous_account_id) = {
+            let _file_lock = self.storage.lock()?;
+            match self.storage.read_locked()? {
+                Some(current) if !current.is_expired_at(Utc::now()) => {
+                    return Ok(to_bearer(current));
+                }
+                Some(current) => (current.refresh_token, current.account_id),
+                None => (refresh_token, None),
+            }
         };
 
         let tokens = refresh_access_token(&self.endpoints, &refresh_token).await?;
         let account_id = extract_account_id(&tokens).or(previous_account_id);
         let auth = StoredOpenAiAuth::from_token_response(tokens, account_id, Utc::now())?;
+
+        let _file_lock = self.storage.lock()?;
+        if let Some(current) = self.storage.read_locked()?
+            && !current.is_expired_at(Utc::now())
+        {
+            return Ok(to_bearer(current));
+        }
         self.storage.write_locked(&auth)?;
         Ok(to_bearer(auth))
     }
