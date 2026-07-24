@@ -346,6 +346,54 @@ async fn current_bearer_refreshes_expired_token_once_for_concurrent_callers() {
 }
 
 #[tokio::test]
+async fn rejected_bearer_refreshes_once_for_concurrent_callers() {
+    let server = RefreshServer::start().await;
+    let storage_home = TempDir::new().unwrap();
+    let storage = OpenAiAuthStorage::new(storage_home.path());
+    storage
+        .write(
+            &StoredOpenAiAuth::from_token_response(
+                TokenResponse {
+                    id_token: None,
+                    access_token: Some("rejected-access".into()),
+                    refresh_token: "initial-refresh".into(),
+                    expires_in: Some(3600),
+                },
+                Some("acct_old".into()),
+                chrono::Utc::now(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let manager = Arc::new(OpenAiSubscriptionAuthManager::new(
+        storage,
+        server.endpoints(),
+    ));
+
+    let calls = (0..8).map(|_| {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .refresh_rejected_bearer("rejected-access")
+                .await
+                .unwrap()
+        })
+    });
+    for result in futures::future::join_all(calls).await {
+        assert_eq!(result.unwrap().access_token, "fresh-access");
+    }
+    assert_eq!(server.refresh_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn shared_default_manager_reuses_coordinator_for_same_home() {
+    let home = TempDir::new().unwrap();
+    let first = OpenAiSubscriptionAuthManager::shared_default(home.path());
+    let second = OpenAiSubscriptionAuthManager::shared_default(home.path());
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
 async fn headless_device_flow_stops_on_cancellation_without_token_exchange() {
     let server = DeviceServer::start(DeviceMode::Pending).await;
     let cancel = CancellationToken::new();

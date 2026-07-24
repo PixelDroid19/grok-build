@@ -344,6 +344,36 @@ impl SessionActor {
         self.set_chat_api_key(new_key).await;
         true
     }
+
+    async fn try_openai_401_recovery(&self) -> bool {
+        let Some(rejected_key) = self.chat_state_handle.get_credentials().await.api_key else {
+            return false;
+        };
+        let manager = crate::auth::openai_subscription::manager::OpenAiSubscriptionAuthManager::shared_default(
+            &crate::util::grok_home::grok_home(),
+        );
+        match manager.refresh_rejected_bearer(&rejected_key).await {
+            Ok(bearer) => {
+                tracing::info!(
+                    session_id = %self.session_info.id.0,
+                    provider = "openai",
+                    "auth recovery: sampler 401, OpenAI token refreshed, retrying"
+                );
+                self.set_chat_api_key(bearer.access_token).await;
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %self.session_info.id.0,
+                    provider = "openai",
+                    error = %error,
+                    "auth recovery: sampler 401, OpenAI refresh failed"
+                );
+                false
+            }
+        }
+    }
+
     /// Gate inputs for `model_id` routed to `base_url`. See
     /// [`crate::agent::auth_method::session_token_auth_gate`] for the rationale
     /// (`base_url` keeps an `Unknown` BYOK status refreshable only
@@ -452,13 +482,9 @@ impl SessionActor {
         let auth_scheme = model_facts.auth_scheme;
         let mut extra_headers = cfg.extra_headers;
         if cfg.provider_id.as_deref() == Some("openai") {
-            let auth =
-                crate::auth::openai_subscription::manager::OpenAiSubscriptionAuthManager::new(
-                    crate::auth::openai_subscription::storage::OpenAiAuthStorage::new(
-                        &crate::util::grok_home::grok_home(),
-                    ),
-                    crate::auth::openai_subscription::model::OpenAiEndpoints::default(),
-                );
+            let auth = crate::auth::openai_subscription::manager::OpenAiSubscriptionAuthManager::shared_default(
+                &crate::util::grok_home::grok_home(),
+            );
             match auth.current_bearer().await {
                 Ok(bearer) => {
                     creds.api_key = Some(bearer.access_token);
@@ -892,12 +918,14 @@ impl SessionActor {
             .data(detailed_message);
             return Err(acp_err);
         }
-        let (failed_model_id, failed_base_url) = self
+        let (failed_model_id, failed_base_url, failed_provider_id) = self
             .chat_state_handle
             .get_sampling_config()
             .await
-            .map(|c| (c.model, c.base_url))
+            .map(|c| (c.model, c.base_url, c.provider_id))
             .unwrap_or_default();
+        let openai_401_recovery_eligible =
+            error.status_code == Some(401) && failed_provider_id.as_deref() == Some("openai");
         let auth_provider =
             if matches!(error.kind, SamplingErrorKind::Auth) || error.status_code == Some(401) {
                 self.model_auth_provider(&failed_model_id)
@@ -908,7 +936,7 @@ impl SessionActor {
             let gate = self.auth_gate(&failed_model_id, &failed_base_url);
             let eligible = gate.active();
             self.log_auth_gate_unknown("handle_sampling_failure", gate, &failed_base_url);
-            if !eligible && auth_provider.is_none() {
+            if !eligible && auth_provider.is_none() && !openai_401_recovery_eligible {
                 tracing::warn!(
                     session_id = %self.session_info.id.0,
                     is_session_based = gate.is_session_based,
@@ -995,6 +1023,10 @@ impl SessionActor {
                 Some(self.session_info.id.0.as_ref()),
                 None,
             );
+        }
+        if openai_401_recovery_eligible && self.try_openai_401_recovery().await {
+            self.prepare_sampler_for_turn().await;
+            return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
         }
         if let Some(ref provider) = auth_provider
             && self.try_provider_401_recovery(provider).await

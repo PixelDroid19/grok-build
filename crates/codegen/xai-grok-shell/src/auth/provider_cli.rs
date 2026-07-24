@@ -16,8 +16,7 @@ use super::openai_subscription::storage::OpenAiAuthStorage;
 pub async fn login_openai_subscription(device_flow: bool) -> anyhow::Result<()> {
     let home = crate::util::grok_home::grok_home();
     let endpoints = OpenAiEndpoints::default();
-    let manager =
-        OpenAiSubscriptionAuthManager::new(OpenAiAuthStorage::new(&home), endpoints.clone());
+    let manager = OpenAiSubscriptionAuthManager::shared_default(&home);
     let cancel = CancellationToken::new();
     let tokens = if device_flow {
         let authorization = request_device_authorization(&endpoints).await?;
@@ -105,12 +104,9 @@ pub async fn login_opencode_go_with_key(key: &str) -> anyhow::Result<()> {
 }
 
 pub async fn logout_openai_subscription() -> anyhow::Result<()> {
-    OpenAiSubscriptionAuthManager::new(
-        OpenAiAuthStorage::new(&crate::util::grok_home::grok_home()),
-        OpenAiEndpoints::default(),
-    )
-    .clear()
-    .await?;
+    OpenAiSubscriptionAuthManager::shared_default(&crate::util::grok_home::grok_home())
+        .clear()
+        .await?;
     println!("Signed out from OpenAI.");
     Ok(())
 }
@@ -127,12 +123,10 @@ pub fn logout_opencode_go() -> anyhow::Result<()> {
 pub async fn provider_status(provider: &str) -> anyhow::Result<String> {
     match provider {
         "openai" => {
-            let status = OpenAiSubscriptionAuthManager::new(
-                OpenAiAuthStorage::new(&crate::util::grok_home::grok_home()),
-                OpenAiEndpoints::default(),
-            )
-            .status()
-            .await?;
+            let status =
+                OpenAiSubscriptionAuthManager::shared_default(&crate::util::grok_home::grok_home())
+                    .status()
+                    .await?;
             Ok(match status {
                 OpenAiAuthStatus::NotAuthenticated => "openai: disconnected".to_owned(),
                 OpenAiAuthStatus::Authenticated {
