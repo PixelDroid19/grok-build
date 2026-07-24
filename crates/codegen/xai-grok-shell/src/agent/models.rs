@@ -591,15 +591,16 @@ impl ModelsManager {
     /// authentication or its ETag lifecycle.
     pub async fn refresh_external_catalogs(&self) {
         let cache_dir = crate::util::grok_home::grok_home();
-        let openai = crate::agent::provider_catalog::load_openai_catalog(&cache_dir).await;
         let opencode_key = std::env::var("OPENCODE_API_KEY").ok().or_else(|| {
             crate::auth::read_provider_api_key(&cache_dir, crate::auth::OPENCODE_GO_API_KEY_SCOPE)
         });
-        let mut opencode = crate::agent::provider_catalog::load_opencode_go_catalog(
-            &cache_dir,
-            opencode_key.as_deref(),
-        )
-        .await;
+        let (openai, mut opencode) = tokio::join!(
+            crate::agent::provider_catalog::load_openai_catalog(&cache_dir),
+            crate::agent::provider_catalog::load_opencode_go_catalog(
+                &cache_dir,
+                opencode_key.as_deref(),
+            )
+        );
         if let Some(key) = opencode_key {
             for entry in opencode.entries.values_mut() {
                 entry.api_key = Some(key.clone());

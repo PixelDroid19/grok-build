@@ -20,6 +20,7 @@ use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
 pub const OPENAI_MODELS_DEV_URL: &str = "https://models.dev/api.json";
 pub const OPENCODE_GO_MODELS_URL: &str = "https://opencode.ai/zen/go/v1/models";
 const PROVIDER_CATALOG_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+const PROVIDER_CATALOG_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const OPENAI_PROVIDER_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENCODE_GO_PROVIDER_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 const OPENCODE_GO_MESSAGES_FAMILIES: &[&str] = &["claude", "minimax", "qwen"];
@@ -191,6 +192,7 @@ async fn fetch_catalog_json(
 ) -> Result<Value, ProviderCatalogError> {
     let mut request = client
         .get(url)
+        .timeout(PROVIDER_CATALOG_REQUEST_TIMEOUT)
         .header(reqwest::header::ACCEPT, "application/json");
     if let Some(bearer) = bearer {
         request = request.bearer_auth(bearer);
