@@ -8,13 +8,15 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
-use ratatui::widgets::Widget;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use super::actions::Action;
 use super::agent_view::{AgentView, active_contexts_for_pane, apply_settings_outcome};
 use super::app_view::InputOutcome;
 
+use crate::key;
 use crate::theme::Theme;
 use crate::views::modal::{self, ActiveModal};
 
@@ -116,6 +118,31 @@ impl AgentView {
         let Some(ref mut modal) = self.active_modal else {
             return InputOutcome::Changed;
         };
+
+        if let ActiveModal::ProviderKeyInput { input, .. } = modal {
+            if key!(Esc).matches(key) {
+                self.active_modal = None;
+                return InputOutcome::Changed;
+            }
+            if key!(Enter).matches(key) {
+                let key = input.text().trim().to_owned();
+                if key.is_empty() {
+                    return InputOutcome::Changed;
+                }
+                input.reset();
+                return InputOutcome::Action(Action::SubmitOpencodeGoKey(key));
+            }
+            let outcome =
+                input.handle_key_with_insert_policy(key, |character| !character.is_control());
+            return match outcome {
+                crate::input::line_editor::LineEditOutcome::TextChanged
+                | crate::input::line_editor::LineEditOutcome::CursorChanged
+                | crate::input::line_editor::LineEditOutcome::HandledNoChange => {
+                    InputOutcome::Changed
+                }
+                crate::input::line_editor::LineEditOutcome::Unhandled => InputOutcome::Unchanged,
+            };
+        }
 
         // Picker-based modals: route Esc through ModalWindow chrome first,
         // then delegate remaining keys to the picker input handler.
@@ -475,7 +502,8 @@ impl AgentView {
                 modal: confirm,
                 pending_target,
             } => self.handle_edit_confirm_choice(confirm, pending_target, ch),
-            ActiveModal::CommandPalette { .. }
+            ActiveModal::ProviderKeyInput { .. }
+            | ActiveModal::CommandPalette { .. }
             | ActiveModal::ArgPicker { .. }
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
@@ -508,6 +536,10 @@ impl AgentView {
             )
         ) {
             return self.handle_palette_or_arg_input_with_registry(&event, registry);
+        }
+        if let Some(ActiveModal::ProviderKeyInput { input, .. }) = self.active_modal.as_mut() {
+            let _ = input.insert_paste(text);
+            return InputOutcome::Changed;
         }
 
         if let Some(ActiveModal::ShortcutsHelp { state, mode, .. }) = self.active_modal.as_mut() {
@@ -1781,6 +1813,75 @@ impl AgentView {
                         false,
                     );
                 }
+            } else if let modal::ActiveModal::ProviderKeyInput {
+                input,
+                error,
+                window,
+            } = active_modal
+            {
+                let compact = self.scrollback.appearance().prompt.compact;
+                let modal_config = ModalWindowConfig {
+                    title: "Connect OpenCode Go",
+                    tabs: None,
+                    shortcuts: &[
+                        Shortcut {
+                            label: "enter save",
+                            clickable: false,
+                            id: 0,
+                        },
+                        Shortcut {
+                            label: "esc cancel",
+                            clickable: false,
+                            id: 0,
+                        },
+                    ],
+                    sizing: ModalSizing {
+                        width_pct: 0.50,
+                        max_width: 80,
+                        min_width: 44,
+                        v_margin: 4,
+                        h_pad: 2,
+                        v_pad: 1,
+                        footer_lines: 2,
+                    }
+                    .with_compact(compact),
+                    fold_info: None,
+                };
+                if let Some(mca) = mw::render_modal_window(buf, area, window, &modal_config, &theme)
+                {
+                    let masked = "•".repeat(input.text().chars().count());
+                    let field = Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.accent_user));
+                    let inner = field.inner(mca.content);
+                    field.render(mca.content, buf);
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        if masked.is_empty() {
+                            "Paste API key"
+                        } else {
+                            &masked
+                        },
+                        Style::default().fg(if masked.is_empty() {
+                            theme.gray_dim
+                        } else {
+                            theme.accent_user
+                        }),
+                    )]))
+                    .render(inner, buf);
+                    if let Some(error) = error {
+                        let error_area = Rect::new(
+                            mca.content.x,
+                            mca.content
+                                .y
+                                .saturating_add(mca.content.height.saturating_sub(1)),
+                            mca.content.width,
+                            1,
+                        );
+                        Paragraph::new(error.as_str())
+                            .style(Style::default().fg(theme.accent_error))
+                            .render(error_area, buf);
+                    }
+                }
             } else if let modal::ActiveModal::ArgPicker {
                 command,
                 args_query,
@@ -1792,6 +1893,7 @@ impl AgentView {
             {
                 // Arg picker: ModalWindow chrome + picker content.
                 let title = match command.as_str() {
+                    "login" => "Connect a provider",
                     "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                     "model" | "m" => "Pick model",
                     "theme" | "t" => "Pick theme",

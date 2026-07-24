@@ -669,6 +669,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             } = &app.auth_state
                 && *current_seq == request_seq
             {
+                app.provider_login_after_auth = None;
                 app.auth_state = AuthState::Pending { error: Some(error) };
                 app.auth_code_input.reset();
             }
@@ -681,6 +682,59 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             mode,
         } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
         TaskResult::AuthCodeSubmitted { .. } => vec![],
+        TaskResult::ProviderLoginComplete {
+            agent_id,
+            provider,
+            result,
+        } => {
+            let mut toast = None;
+            {
+                let Some(agent) = app.agents.get_mut(&agent_id) else {
+                    return vec![];
+                };
+                match result {
+                    Ok(()) => {
+                        let items = crate::slash::commands::model::build_model_items_for_provider(
+                            &agent.session.models,
+                            provider.provider_id(),
+                        );
+                        if items.is_empty() {
+                            agent.active_modal = None;
+                            toast = Some(format!(
+                                "{} connected, but no models are available yet.",
+                                provider.label()
+                            ));
+                        } else {
+                            agent.active_modal =
+                                Some(crate::views::modal::ActiveModal::ArgPicker {
+                                    command: "model".to_owned(),
+                                    args_query: String::new(),
+                                    items: items.clone(),
+                                    original_items: items,
+                                    state: crate::views::picker::PickerState::input_active(),
+                                    previous_palette: None,
+                                    window: crate::views::modal_window::ModalWindowState::new(),
+                                });
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(crate::views::modal::ActiveModal::ProviderKeyInput {
+                            error: modal_error,
+                            ..
+                        }) = agent.active_modal.as_mut()
+                        {
+                            *modal_error = Some(error);
+                        } else {
+                            toast = Some(error);
+                        }
+                    }
+                }
+            }
+            if let Some(toast) = toast {
+                app.show_toast(&toast);
+            }
+            vec![]
+        }
         TaskResult::AuthCancelComplete => vec![],
         TaskResult::McpsListLoaded { agent_id, result } => {
             use crate::views::extensions_modal::TabDataState;

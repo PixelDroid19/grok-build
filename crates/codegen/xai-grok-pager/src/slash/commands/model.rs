@@ -150,7 +150,7 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
 
 /// One row per logical model. Reasoning models get a trailing space in
 /// `insert_text` so the prompt widget chains into the effort sub-menu.
-fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
+pub(crate) fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
     let current_id = models.current.as_ref();
     let mut items: Vec<ArgItem> = Vec::with_capacity(models.available.len());
     for (id, info) in &models.available {
@@ -180,6 +180,40 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
         });
     }
     items
+}
+
+/// The `/login` success path uses the same model rows as `/model`, narrowed to
+/// the provider that was just authenticated.
+pub(crate) fn build_model_items_for_provider(
+    models: &ModelState,
+    provider: xai_grok_shell::agent::model_providers::ProviderId,
+) -> Vec<ArgItem> {
+    let current_id = models.current.as_ref();
+    models
+        .available
+        .iter()
+        .filter_map(|(id, info)| {
+            let (model_provider, _) =
+                xai_grok_shell::agent::model_providers::ProviderId::parse_catalog_key(
+                    id.0.as_ref(),
+                );
+            (model_provider == provider).then(|| {
+                let is_current = current_id == Some(id);
+                let supports = supports_reasoning_effort(info);
+                let name = info.name.clone();
+                ArgItem {
+                    display: if is_current {
+                        format!("{name} (current)")
+                    } else {
+                        name.clone()
+                    },
+                    match_text: name.clone(),
+                    insert_text: if supports { format!("{name} ") } else { name },
+                    description: info.description.clone().unwrap_or_default(),
+                }
+            })
+        })
+        .collect()
 }
 
 /// One row per effort level for the `/model` chained effort phase.
@@ -296,6 +330,23 @@ mod tests {
         // Plain model has no trailing space -- Enter commits immediately.
         let plain = items.iter().find(|i| i.match_text == "Grok 4.5").unwrap();
         assert_eq!(plain.insert_text, "Grok 4.5");
+    }
+
+    #[test]
+    fn provider_picker_filters_by_catalog_id_even_when_names_collide() {
+        let mut state = ModelState::default();
+        let (xai_id, xai_info) = plain_model("grok-4.5", "Shared model name");
+        let (openai_id, openai_info) = plain_model("openai:gpt-5", "Shared model name");
+        state.available.insert(xai_id, xai_info);
+        state.available.insert(openai_id, openai_info);
+
+        let items = build_model_items_for_provider(
+            &state,
+            xai_grok_shell::agent::model_providers::ProviderId::OpenAi,
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].match_text, "Shared model name");
     }
 
     #[test]

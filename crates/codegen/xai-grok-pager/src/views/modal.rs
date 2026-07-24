@@ -171,6 +171,16 @@ pub fn howto_list_modal(previous_palette: Option<PaletteSnapshot>) -> ActiveModa
 /// Each variant wraps a `ModalConfirmation<R>` with its concrete result
 /// type plus any context needed for resolution (e.g., pending focus target).
 pub enum ActiveModal {
+    /// Secure entry for an OpenCode Go API key. The key only exists in this
+    /// editor until submission and is never added to prompt history.
+    ProviderKeyInput {
+        // `ActiveModal` is public because it is held by public view state, but
+        // this editor is intentionally crate-private implementation detail.
+        #[allow(private_interfaces)]
+        input: crate::input::line_editor::LineEditor,
+        error: Option<String>,
+        window: ModalWindowState,
+    },
     /// Confirmation for leaving a dirty queued-prompt edit.
     EditConfirm {
         modal: ModalConfirmation<EditConfirmResult>,
@@ -629,7 +639,8 @@ impl ActiveModal {
                 .iter()
                 .map(|o| (o.key, o.result.label()))
                 .collect(),
-            ActiveModal::CommandPalette { .. }
+            ActiveModal::ProviderKeyInput { .. }
+            | ActiveModal::CommandPalette { .. }
             | ActiveModal::ArgPicker { .. }
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
@@ -649,6 +660,7 @@ impl ActiveModal {
                     "Save changes?"
                 }
             }
+            ActiveModal::ProviderKeyInput { .. } => "Connect OpenCode Go",
             ActiveModal::CommandPalette { .. } => "Commands",
             ActiveModal::SessionPicker { .. } => "Resume session",
             ActiveModal::ArgPicker {
@@ -656,6 +668,7 @@ impl ActiveModal {
                 args_query,
                 ..
             } => match command.as_str() {
+                "login" => "Connect a provider",
                 "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                 "model" | "m" => "Pick model",
                 "theme" | "t" => "Pick theme",

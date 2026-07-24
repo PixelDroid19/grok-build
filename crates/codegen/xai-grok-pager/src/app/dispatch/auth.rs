@@ -88,6 +88,7 @@ pub(super) fn dispatch_switch_account(app: &mut AppView) -> Vec<Effect> {
     ensure_login_method(app);
 
     let Some(method_id) = app.login_method_id.clone() else {
+        app.provider_login_after_auth = None;
         app.auth_state = AuthState::Pending {
             error: Some(no_login_method_error(app)),
         };
@@ -256,6 +257,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
 /// does not race a still-polling prior mint. Bump the seq so a fresh login
 /// does not collide with a late `AuthComplete`/`AuthFailed`.
 pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
+    app.provider_login_after_auth = None;
     let Some(return_view) = app.auth_return_view.take() else {
         return vec![];
     };
@@ -333,6 +335,9 @@ pub(super) fn handle_auth_complete(
         // auth detour.
         if let Some(return_view) = app.auth_return_view.take() {
             restore_auth_return_view(app, return_view);
+            if let Some((agent_id, provider)) = app.provider_login_after_auth.take() {
+                open_provider_model_picker(app, agent_id, provider);
+            }
             // Mid-session re-auth returns to the existing session, NOT
             // the startup flow, so discard any deferred startup stash
             // (e.g. an incidental `Ctrl+N` pressed during /login that the
@@ -410,6 +415,39 @@ pub(super) fn handle_auth_complete(
         return effects;
     }
     vec![]
+}
+
+fn open_provider_model_picker(
+    app: &mut AppView,
+    agent_id: AgentId,
+    provider: crate::provider_login::ProviderLoginProvider,
+) {
+    let items = match app.agents.get(&agent_id) {
+        Some(agent) => crate::slash::commands::model::build_model_items_for_provider(
+            &agent.session.models,
+            provider.provider_id(),
+        ),
+        None => return,
+    };
+    if items.is_empty() {
+        app.show_toast(&format!(
+            "{} connected, but no models are available yet.",
+            provider.label()
+        ));
+        return;
+    }
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return;
+    };
+    agent.active_modal = Some(crate::views::modal::ActiveModal::ArgPicker {
+        command: "model".to_owned(),
+        args_query: String::new(),
+        items: items.clone(),
+        original_items: items,
+        state: crate::views::picker::PickerState::input_active(),
+        previous_palette: None,
+        window: crate::views::modal_window::ModalWindowState::new(),
+    });
 }
 
 pub(super) fn handle_auth_url_ready(

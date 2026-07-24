@@ -1073,6 +1073,91 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::Login => dispatch_login(app),
+        Action::OpenProviderLogin => {
+            let xai_connected = matches!(app.auth_state, AuthState::Done);
+            let items = crate::provider_login::provider_rows(|provider| match provider {
+                crate::provider_login::ProviderLoginProvider::Xai => xai_connected,
+                crate::provider_login::ProviderLoginProvider::OpenAi => {
+                    xai_grok_shell::auth::provider_cli::provider_is_authenticated("openai")
+                }
+                crate::provider_login::ProviderLoginProvider::OpencodeGo => {
+                    xai_grok_shell::auth::provider_cli::provider_is_authenticated("opencode-go")
+                }
+            })
+            .into_iter()
+            .map(|row| crate::slash::command::ArgItem {
+                display: if row.connected {
+                    format!("{} (connected)", row.label)
+                } else {
+                    row.label.to_owned()
+                },
+                match_text: format!("{} {}", row.label, row.provider.id()),
+                insert_text: row.provider.id().to_owned(),
+                description: if row.connected {
+                    "Re-authenticate".to_owned()
+                } else {
+                    "Connect provider".to_owned()
+                },
+            })
+            .collect::<Vec<_>>();
+            let ActiveView::Agent(id) = app.active_view else {
+                return vec![];
+            };
+            let Some(agent) = app.agents.get_mut(&id) else {
+                return vec![];
+            };
+            agent.active_modal = Some(crate::views::modal::ActiveModal::ArgPicker {
+                command: "login".to_owned(),
+                args_query: String::new(),
+                items: items.clone(),
+                original_items: items,
+                state: crate::views::picker::PickerState::input_active(),
+                previous_palette: None,
+                window: crate::views::modal_window::ModalWindowState::new(),
+            });
+            vec![]
+        }
+        Action::ConnectProvider(crate::provider_login::ProviderLoginProvider::Xai) => {
+            if let ActiveView::Agent(agent_id) = app.active_view {
+                app.provider_login_after_auth =
+                    Some((agent_id, crate::provider_login::ProviderLoginProvider::Xai));
+            }
+            dispatch_login(app)
+        }
+        Action::ConnectProvider(crate::provider_login::ProviderLoginProvider::OpencodeGo) => {
+            let ActiveView::Agent(id) = app.active_view else {
+                return vec![];
+            };
+            let Some(agent) = app.agents.get_mut(&id) else {
+                return vec![];
+            };
+            agent.active_modal = Some(crate::views::modal::ActiveModal::ProviderKeyInput {
+                input: Default::default(),
+                error: None,
+                window: crate::views::modal_window::ModalWindowState::new(),
+            });
+            vec![]
+        }
+        Action::ConnectProvider(crate::provider_login::ProviderLoginProvider::OpenAi) => {
+            let ActiveView::Agent(agent_id) = app.active_view else {
+                return vec![];
+            };
+            vec![Effect::LoginProvider {
+                agent_id,
+                provider: crate::provider_login::ProviderLoginProvider::OpenAi,
+                opencode_go_key: None,
+            }]
+        }
+        Action::SubmitOpencodeGoKey(key) => {
+            let ActiveView::Agent(agent_id) = app.active_view else {
+                return vec![];
+            };
+            vec![Effect::LoginProvider {
+                agent_id,
+                provider: crate::provider_login::ProviderLoginProvider::OpencodeGo,
+                opencode_go_key: Some(key),
+            }]
+        }
         Action::CancelLogin => dispatch_cancel_login(app),
         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
         Action::CopyAuthUrl => {

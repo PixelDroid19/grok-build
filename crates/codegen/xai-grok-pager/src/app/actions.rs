@@ -638,6 +638,12 @@ pub enum Action {
     SwitchAccount,
     /// User pressed login on the welcome screen.
     Login,
+    /// Open the in-session provider connection picker used by `/login`.
+    OpenProviderLogin,
+    /// Start authentication for a provider selected in the in-session picker.
+    ConnectProvider(crate::provider_login::ProviderLoginProvider),
+    /// Submit the temporary, masked OpenCode Go API key from the provider modal.
+    SubmitOpencodeGoKey(String),
     /// Cancel an in-progress login that was started from inside a session
     /// (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit
@@ -1722,6 +1728,12 @@ pub enum Effect {
         use_oauth: bool,
         force_interactive: bool,
     },
+    /// Authenticate an independently configured provider from the TUI.
+    LoginProvider {
+        agent_id: AgentId,
+        provider: crate::provider_login::ProviderLoginProvider,
+        opencode_go_key: Option<String>,
+    },
     /// Poll for auth URL from the agent (ext request).
     PollAuthUrl { request_seq: u64 },
     /// Submit a manually-pasted auth code (ext request).
@@ -2423,6 +2435,12 @@ pub enum TaskResult {
     /// Auth code was submitted (fire-and-forget).
     AuthCodeSubmitted {
         request_seq: u64,
+    },
+    /// An independently configured provider completed its login flow.
+    ProviderLoginComplete {
+        agent_id: AgentId,
+        provider: crate::provider_login::ProviderLoginProvider,
+        result: Result<(), String>,
     },
     /// MCP server list fetched from shell.
     McpsListLoaded {

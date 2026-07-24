@@ -32,13 +32,23 @@ Tokens in `~/.grok/auth.json` (and MCP OAuth tokens in `~/.grok/mcp_credentials.
 
 ### Re-authenticate
 
-To switch accounts or resolve an authentication problem, run:
+Inside a running conversation, type `/login`. It opens **Connect a provider**
+and lists xAI, OpenAI, and OpenCode Go, marking already connected providers.
+Choosing a provider starts only that provider's sign-in flow. On success, Grok
+opens `/model` filtered to that provider; selecting a model applies it to the
+current conversation immediately. You can run `/login` again to connect another
+provider. Cancelling or a failed sign-in returns to the conversation without
+disconnecting any provider.
+
+To switch accounts or resolve an authentication problem from the shell, run:
 
 ```bash
 grok login
 ```
 
-Running `grok login` starts the sign-in flow again, replacing your cached session. By default, it opens your browser and signs in through SpaceXAI OAuth at `auth.x.ai`. Pass a flag to select a different flow:
+Running `grok login --provider xai` starts the xAI sign-in flow again, replacing
+only the cached xAI session. By default, it opens your browser and signs in
+through SpaceXAI OAuth at `auth.x.ai`. Pass a flag to select a different flow:
 
 | Flag | Description |
 |------|-------------|

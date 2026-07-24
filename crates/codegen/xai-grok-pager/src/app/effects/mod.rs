@@ -2035,6 +2035,58 @@ pub(crate) fn execute(
                 });
             meta.auth_abort_handle = Some((request_seq, abort_handle));
         }
+        Effect::LoginProvider {
+            agent_id,
+            provider,
+            opencode_go_key,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let result = match provider {
+                    crate::provider_login::ProviderLoginProvider::OpenAi => {
+                        xai_grok_shell::auth::provider_cli::login_openai_subscription(false).await
+                    }
+                    crate::provider_login::ProviderLoginProvider::OpencodeGo => {
+                        match opencode_go_key.as_deref() {
+                            Some(key) => {
+                                xai_grok_shell::auth::provider_cli::login_opencode_go_with_key(key).await
+                            }
+                            None => Err(anyhow::anyhow!("OpenCode Go API key is required")),
+                        }
+                    }
+                    crate::provider_login::ProviderLoginProvider::Xai => {
+                        Err(anyhow::anyhow!("xAI login is handled by the active session"))
+                    }
+                }
+                .map_err(|error| sanitize_user_error(&error.to_string()));
+
+                // The login helpers persist a fresh external-provider catalog.
+                // Refresh the already-running ACP agent before opening `/model`,
+                // otherwise a long-lived conversation would keep its startup
+                // snapshot and show no newly connected provider models.
+                let result = match result {
+                    Ok(()) => {
+                        let params = serde_json::json!({});
+                        let request = acp::ExtRequest::new(
+                            "x.ai/internal/refresh_external_models",
+                            serde_json::value::to_raw_value(&params)
+                                .expect("serialize external model refresh params")
+                                .into(),
+                        );
+                        acp_send(request, &tx)
+                            .await
+                            .map(|_| ())
+                            .map_err(|error| sanitize_user_error(&error.to_string()))
+                    }
+                    Err(error) => Err(error),
+                };
+                TaskResult::ProviderLoginComplete {
+                    agent_id,
+                    provider,
+                    result,
+                }
+            });
+        }
         Effect::PollAuthUrl { request_seq } => {
             let tx = acp_tx.clone();
             let abort_handle = tasks

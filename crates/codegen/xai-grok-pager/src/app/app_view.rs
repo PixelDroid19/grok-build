@@ -592,6 +592,10 @@ pub struct AppView {
     /// (e.g. `Agent`) afterwards. `None` at startup so the normal
     /// login-then-load flow is preserved.
     pub auth_return_view: Option<ActiveView>,
+    /// Provider picker that initiated the current xAI OAuth flow. Kept
+    /// separately from generic re-auth so a successful `/login` can continue
+    /// directly to that provider's model list in the same conversation.
+    pub provider_login_after_auth: Option<(AgentId, crate::provider_login::ProviderLoginProvider)>,
     /// Per-agent views (keyed by AgentId).
     pub agents: IndexMap<AgentId, AgentView>,
     /// Monotonically increasing counter for agent ID allocation.
@@ -1363,6 +1367,7 @@ impl AppView {
         Self {
             active_view: ActiveView::Welcome,
             auth_return_view: None,
+            provider_login_after_auth: None,
             agents: IndexMap::new(),
             next_agent_id: 0,
             models,
@@ -5602,6 +5607,7 @@ pub(crate) mod tests {
         AppView {
             active_view: ActiveView::Welcome,
             auth_return_view: None,
+            provider_login_after_auth: None,
             agents: indexmap::IndexMap::new(),
             next_agent_id: 0,
             models: ModelState::default(),

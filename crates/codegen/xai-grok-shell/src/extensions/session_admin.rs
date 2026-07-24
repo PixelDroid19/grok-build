@@ -13,6 +13,7 @@
 //! - `x.ai/internal/reload_skills`          skills file watcher fan-out
 //! - `x.ai/internal/reload_models`          model list hot-reload from config.toml
 //! - `x.ai/internal/reload_models_cache`    model catalog hot-reload from disk cache
+//! - `x.ai/internal/refresh_external_models` refresh subscription-provider catalogs
 //! - `x.ai/internal/auth_cleared`           auth hot-clear cleanup
 //! - `x.ai/plugins/reload`                  rebuild shared plugin registry
 //! - `x.ai/commands/list`                   list slash commands
@@ -48,6 +49,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         "x.ai/internal/reload_workflows" => handle_reload_workflows(agent),
         "x.ai/internal/reload_models" => handle_reload_models(agent),
         "x.ai/internal/reload_models_cache" => handle_reload_models_cache(agent),
+        "x.ai/internal/refresh_external_models" => handle_refresh_external_models(agent).await,
         "x.ai/internal/auth_cleared" => handle_auth_cleared(agent),
         "x.ai/plugins/reload" => handle_plugins_reload(agent).await,
         "x.ai/commands/list" => handle_commands_list(agent, args).await,
@@ -613,6 +615,19 @@ fn handle_reload_models_cache(agent: &MvpAgent) -> ExtResult {
     agent.models_manager.reload_from_disk_cache();
     agent.sync_process_static_api_key(None);
     ExtMethodResult::success(serde_json::json!({ "reloaded": true }))
+        .to_ext_response()
+        .map_err(|e| acp::Error::internal_error().data(e.to_string()))
+}
+
+/// Fetch and apply provider-owned model catalogs after a TUI provider login.
+///
+/// Login persists credentials outside the ACP agent. A running agent therefore
+/// needs this explicit refresh to publish its updated model list to the current
+/// conversation without being restarted.
+async fn handle_refresh_external_models(agent: &MvpAgent) -> ExtResult {
+    agent.models_manager.refresh_external_catalogs().await;
+    let count = agent.models_manager.models().len();
+    ExtMethodResult::success(serde_json::json!({ "models": count }))
         .to_ext_response()
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))
 }
