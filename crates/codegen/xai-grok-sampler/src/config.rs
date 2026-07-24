@@ -54,6 +54,9 @@ pub struct SamplerConfig {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub api_backend: ApiBackend,
+    /// Logical provider identifier for request routing/analytics.
+    #[serde(default)]
+    pub provider_id: Option<String>,
     #[serde(default)]
     pub auth_scheme: AuthScheme,
     /// Extra request headers applied verbatim. The sampler never inspects
@@ -145,6 +148,7 @@ impl Default for SamplerConfig {
             temperature: None,
             top_p: None,
             api_backend: ApiBackend::default(),
+            provider_id: None,
             auth_scheme: AuthScheme::default(),
             extra_headers: IndexMap::new(),
             query_params: IndexMap::new(),
@@ -238,8 +242,10 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("doom_loop_recovery");
+        stripped.as_object_mut().unwrap().remove("provider_id");
         let config: SamplerConfig = serde_json::from_value(stripped).unwrap();
         assert!(config.doom_loop_recovery.is_none());
+        assert!(config.provider_id.is_none());
 
         let with_policy = SamplerConfig {
             doom_loop_recovery: Some(DoomLoopRecoveryPolicy {

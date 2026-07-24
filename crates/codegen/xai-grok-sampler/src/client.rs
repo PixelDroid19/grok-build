@@ -2014,6 +2014,7 @@ mod tests {
             temperature: None,
             top_p: None,
             api_backend: ApiBackend::ChatCompletions,
+            provider_id: None,
             auth_scheme: AuthScheme::Bearer,
             extra_headers: IndexMap::new(),
             query_params: IndexMap::new(),
@@ -2238,6 +2239,26 @@ mod tests {
         );
         assert!(url.contains("api-version=x"), "url: {url}");
         assert!(!url.contains("x/responses"), "url: {url}");
+    }
+
+    #[test]
+    fn endpoint_appends_path_for_chatgpt_codex_backend() {
+        let template =
+            EndpointTemplate::new("https://chatgpt.com/backend-api/codex", &IndexMap::new());
+        let url = template.url_for_path("responses");
+        assert_eq!(url, "https://chatgpt.com/backend-api/codex/responses");
+    }
+
+    #[test]
+    fn endpoint_appends_path_for_opencode_go_backend() {
+        let template = EndpointTemplate::new("https://opencode.ai/zen/go/v1", &IndexMap::new());
+        let chat_url = template.url_for_path("/chat/completions");
+        let responses_url = template.url_for_path("responses");
+        assert_eq!(
+            chat_url,
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        );
+        assert_eq!(responses_url, "https://opencode.ai/zen/go/v1/responses");
     }
 
     #[test]
@@ -2477,6 +2498,50 @@ mod tests {
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok()),
             Some("Bearer fresh-bearer"),
+        );
+    }
+
+    #[test]
+    fn post_preserves_chatgpt_account_id_header_with_live_bearer_resolver() {
+        #[derive(Debug)]
+        struct TestInjector;
+        impl crate::config::HeaderInjector for TestInjector {
+            fn inject(&self, headers: &mut HeaderMap) {
+                headers.insert(
+                    HeaderName::from_static("chatgpt-account-id"),
+                    HeaderValue::from_static("acct_123"),
+                );
+            }
+        }
+
+        let cfg = SamplerConfig {
+            api_key: Some("stale-bearer".to_string()),
+            api_backend: ApiBackend::Responses,
+            auth_scheme: AuthScheme::Bearer,
+            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver("fresh-bearer"))),
+            header_injector: Some(std::sync::Arc::new(TestInjector)),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+        let request = client
+            .post("https://example.test/v1/responses")
+            .build()
+            .expect("request should build");
+        let auth_count = request.headers().get_all(AUTHORIZATION).iter().count();
+        assert_eq!(auth_count, 1, "exactly one Authorization header expected");
+        assert_eq!(
+            request
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer fresh-bearer")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("chatgpt-account-id")
+                .and_then(|v| v.to_str().ok()),
+            Some("acct_123")
         );
     }
 
