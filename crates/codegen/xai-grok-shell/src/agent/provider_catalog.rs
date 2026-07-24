@@ -2,7 +2,10 @@
 
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use indexmap::IndexMap;
@@ -19,6 +22,10 @@ pub const OPENCODE_GO_MODELS_URL: &str = "https://opencode.ai/zen/go/v1/models";
 const PROVIDER_CATALOG_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 const OPENAI_PROVIDER_BASE_URL: &str = "https://api.openai.com/v1";
 const OPENCODE_GO_PROVIDER_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
+const OPENCODE_GO_MESSAGES_FAMILIES: &[&str] = &["claude", "minimax", "qwen"];
+const OPENCODE_GPT_OPENAI_MIN_VERSION: (u32, u32, u32) = (5, 4, 0);
+
+static PROVIDER_CATALOG_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CatalogProvenance {
@@ -198,6 +205,13 @@ struct ProviderCatalogCache {
     origin: String,
 }
 
+fn now_nanos() -> u128 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(now) => now.as_nanos(),
+        Err(_) => 0,
+    }
+}
+
 impl ProviderCatalogCache {
     fn new(cache_dir: &Path, provider_id: ProviderId, origin: &str) -> Self {
         Self {
@@ -205,6 +219,14 @@ impl ProviderCatalogCache {
             provider_id,
             origin: origin.to_owned(),
         }
+    }
+
+    fn temporary_path(&self) -> PathBuf {
+        let seq = PROVIDER_CATALOG_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let pid = process::id();
+        let nanos = now_nanos();
+        self.path
+            .with_extension(format!("json.tmp.{pid}.{nanos}.{seq}"))
     }
 
     fn load_fresh(&self) -> Option<IndexMap<String, ModelEntry>> {
@@ -245,7 +267,7 @@ impl ProviderCatalogCache {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let tmp = self.path.with_extension("json.tmp");
+        let tmp = self.temporary_path();
         if let Ok(json) = serde_json::to_vec_pretty(&cache)
             && std::fs::write(&tmp, json).is_ok()
         {
@@ -359,13 +381,26 @@ fn openai_model_is_opencode_compatible(model: &ModelsDevModel) -> bool {
     if has_reasoning_mode_pro(&model.experimental) {
         return false;
     }
-    openai_gpt_numeric_version(&model.id).is_some_and(|version| version > 5.4)
+    openai_gpt_numeric_version(&model.id)
+        .is_some_and(|version| version > OPENCODE_GPT_OPENAI_MIN_VERSION)
 }
 
-fn openai_gpt_numeric_version(id: &str) -> Option<f32> {
+fn openai_gpt_numeric_version(id: &str) -> Option<(u32, u32, u32)> {
     let suffix = id.strip_prefix("gpt-")?;
-    let mut parts = suffix.split(|c: char| !(c.is_ascii_digit() || c == '.'));
-    parts.next()?.parse::<f32>().ok()
+    let versions = suffix
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .next()?;
+    let mut parts = versions.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((major, minor, patch))
 }
 
 fn has_reasoning_mode_pro(value: &Value) -> bool {
@@ -482,15 +517,31 @@ pub(crate) fn parse_opencode_go_catalog(
 }
 
 fn opencode_backend_for(model: &OpenCodeGoModel) -> ApiBackend {
+    let model_id = model.id.to_ascii_lowercase();
     let mut hints = Vec::new();
     if let Some(endpoint) = &model.endpoint {
         hints.push(endpoint.to_ascii_lowercase());
     }
     hints.push(model.capabilities.to_string().to_ascii_lowercase());
-    if hints
+
+    if OPENCODE_GO_MESSAGES_FAMILIES
         .iter()
-        .any(|hint| hint.contains("responses") || hint.contains("/responses"))
+        .any(|needle| model_id.contains(needle))
     {
+        return ApiBackend::Messages;
+    }
+
+    let has_responses_hint = hints
+        .iter()
+        .any(|hint| hint.contains("responses") || hint.contains("/responses"));
+    if model_id.starts_with("gpt-") {
+        return if has_responses_hint {
+            ApiBackend::Responses
+        } else {
+            ApiBackend::ChatCompletions
+        };
+    }
+    if has_responses_hint {
         ApiBackend::Responses
     } else if hints
         .iter()
@@ -553,6 +604,10 @@ mod tests {
                         "id": "gpt-5.7-terra",
                         "limit": { "context": 1050000 }
                     },
+                    "gpt-5.10": {
+                        "id": "gpt-5.10",
+                        "limit": { "context": 1050000 }
+                    },
                     "gpt-5.3-codex-spark": {
                         "id": "gpt-5.3-codex-spark",
                         "limit": { "context": 128000 }
@@ -578,6 +633,11 @@ mod tests {
             ProviderId::parse_catalog_key("grok-4.5"),
             (ProviderId::Xai, "grok-4.5")
         );
+        let custom = ProviderId::Custom("partner:gateway".to_owned());
+        assert_eq!(
+            ProviderId::parse_catalog_key(&custom.catalog_key("grok-4.5")),
+            (custom, "grok-4.5")
+        );
     }
 
     #[test]
@@ -587,6 +647,7 @@ mod tests {
         assert!(entries.contains_key("openai:gpt-5.5"));
         assert!(entries.contains_key("openai:gpt-5.3-codex-spark"));
         assert!(entries.contains_key("openai:gpt-5.7-terra"));
+        assert!(entries.contains_key("openai:gpt-5.10"));
         assert!(!entries.contains_key("openai:gpt-5.4-pro"));
         assert!(!entries.contains_key("openai:gpt-5.5-pro"));
         assert!(!entries.contains_key("openai:gpt-5.6-sol"));
@@ -612,6 +673,18 @@ mod tests {
                 "id": "claudeish",
                 "capabilities": { "api": "messages", "vendor": "anthropic" }
             }, {
+                "id": "qwen-2.5",
+                "capabilities": { "api": "chat-completions", "vendor": "qwen" },
+                "limit": { "context": 1024, "output": 1024 }
+            }, {
+                "id": "gpt-4o",
+                "endpoint": "/v1/responses",
+                "limit": { "context": 8192, "output": 1024 }
+            }, {
+                "id": "gpt-4o-no-responses",
+                "endpoint": "/v1/chat/completions",
+                "limit": { "context": 8192, "output": 1024 }
+            }, {
                 "id": "plain-chat"
             }]
         });
@@ -627,6 +700,18 @@ mod tests {
         assert_eq!(
             entries["opencode-go:claudeish"].info.api_backend,
             ApiBackend::Messages
+        );
+        assert_eq!(
+            entries["opencode-go:qwen-2.5"].info.api_backend,
+            ApiBackend::Messages
+        );
+        assert_eq!(
+            entries["opencode-go:gpt-4o"].info.api_backend,
+            ApiBackend::Responses
+        );
+        assert_eq!(
+            entries["opencode-go:gpt-4o-no-responses"].info.api_backend,
+            ApiBackend::ChatCompletions
         );
         assert_eq!(
             entries["opencode-go:plain-chat"].info.api_backend,

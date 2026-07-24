@@ -54,11 +54,16 @@ impl ProviderId {
             Self::Xai => model_id.to_owned(),
             Self::OpenAi => format!("{}:{model_id}", Self::OPENAI),
             Self::OpencodeGo => format!("{}:{model_id}", Self::OPENCODE_GO),
-            Self::Custom(id) => format!("{id}:{model_id}"),
+            Self::Custom(id) => format!("{}{}:{model_id}", Self::CUSTOM_PREFIX, id),
         }
     }
 
     pub fn parse_catalog_key(value: &str) -> (Self, &str) {
+        if let Some(rest) = value.strip_prefix(Self::CUSTOM_PREFIX)
+            && let Some((provider, model)) = rest.rsplit_once(':')
+        {
+            return (Self::Custom(provider.to_owned()), model);
+        }
         if let Some(model) = value.strip_prefix("openai:") {
             return (Self::OpenAi, model);
         }
