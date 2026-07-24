@@ -1080,6 +1080,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 crate::provider_login::ProviderLoginProvider::OpenAi => {
                     xai_grok_shell::auth::provider_cli::provider_is_authenticated("openai")
                 }
+                crate::provider_login::ProviderLoginProvider::OpencodeZen => {
+                    xai_grok_shell::auth::provider_cli::provider_is_authenticated("opencode-zen")
+                }
                 crate::provider_login::ProviderLoginProvider::OpencodeGo => {
                     xai_grok_shell::auth::provider_cli::provider_is_authenticated("opencode-go")
                 }
@@ -1124,7 +1127,10 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             }
             dispatch_login(app)
         }
-        Action::ConnectProvider(crate::provider_login::ProviderLoginProvider::OpencodeGo) => {
+        Action::ConnectProvider(
+            provider @ (crate::provider_login::ProviderLoginProvider::OpencodeZen
+            | crate::provider_login::ProviderLoginProvider::OpencodeGo),
+        ) => {
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
             };
@@ -1132,6 +1138,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 return vec![];
             };
             agent.active_modal = Some(crate::views::modal::ActiveModal::ProviderKeyInput {
+                provider,
                 input: Default::default(),
                 error: None,
                 window: crate::views::modal_window::ModalWindowState::new(),
@@ -1148,13 +1155,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 opencode_go_key: None,
             }]
         }
-        Action::SubmitOpencodeGoKey(key) => {
+        Action::SubmitOpencodeKey { provider, key } => {
             let ActiveView::Agent(agent_id) = app.active_view else {
                 return vec![];
             };
             vec![Effect::LoginProvider {
                 agent_id,
-                provider: crate::provider_login::ProviderLoginProvider::OpencodeGo,
+                provider,
                 opencode_go_key: Some(key),
             }]
         }

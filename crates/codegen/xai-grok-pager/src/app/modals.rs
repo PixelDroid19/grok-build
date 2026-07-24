@@ -119,7 +119,10 @@ impl AgentView {
             return InputOutcome::Changed;
         };
 
-        if let ActiveModal::ProviderKeyInput { input, .. } = modal {
+        if let ActiveModal::ProviderKeyInput {
+            provider, input, ..
+        } = modal
+        {
             if key!(Esc).matches(key) {
                 self.active_modal = None;
                 return InputOutcome::Changed;
@@ -130,7 +133,10 @@ impl AgentView {
                     return InputOutcome::Changed;
                 }
                 input.reset();
-                return InputOutcome::Action(Action::SubmitOpencodeGoKey(key));
+                return InputOutcome::Action(Action::SubmitOpencodeKey {
+                    provider: *provider,
+                    key,
+                });
             }
             let outcome =
                 input.handle_key_with_insert_policy(key, |character| !character.is_control());
@@ -1814,6 +1820,7 @@ impl AgentView {
                     );
                 }
             } else if let modal::ActiveModal::ProviderKeyInput {
+                provider,
                 input,
                 error,
                 window,
@@ -1821,7 +1828,7 @@ impl AgentView {
             {
                 let compact = self.scrollback.appearance().prompt.compact;
                 let modal_config = ModalWindowConfig {
-                    title: "Connect OpenCode Go",
+                    title: provider.label(),
                     tabs: None,
                     shortcuts: &[
                         Shortcut {

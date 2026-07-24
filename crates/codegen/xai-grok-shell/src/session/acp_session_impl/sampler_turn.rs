@@ -60,6 +60,10 @@ impl SessionTokenAuthGate {
         )
     }
 }
+
+fn uses_static_provider_api_key(provider_id: Option<&str>) -> bool {
+    matches!(provider_id, Some("opencode-go"))
+}
 /// Run a tool call; on an auth-shaped failure, attempt recovery via
 /// `AuthManager` and one retry. When `shared_recovery` is `Some`, concurrent
 /// 401s in the same batch deduplicate via `OnceCell::get_or_init`.
@@ -924,6 +928,23 @@ impl SessionActor {
             .await
             .map(|c| (c.model, c.base_url, c.provider_id))
             .unwrap_or_default();
+        if error.status_code == Some(401)
+            && uses_static_provider_api_key(failed_provider_id.as_deref())
+        {
+            let message = format!(
+                "{detailed_message}\n\nOpenCode Go rejected this request (401). Check the API key, \
+                 Go plan, and available billing balance, then reconnect it with /login."
+            );
+            self.log_terminal_failure("opencode_go_unauthorized", error.status_code, &message);
+            self.send_xai_notification(XaiSessionUpdate::RetryState(
+                crate::extensions::notification::RetryState::Failed {
+                    error_type: "opencode_go_unauthorized".to_string(),
+                    message: message.clone(),
+                },
+            ))
+            .await;
+            return Err(acp::Error::invalid_params().data(message));
+        }
         let openai_401_recovery_eligible =
             error.status_code == Some(401) && failed_provider_id.as_deref() == Some("openai");
         let auth_provider =
@@ -1545,5 +1566,16 @@ mod configured_cutoff_tests {
             let inherited = super::resolve_configured_cutoff(seed.clone(), base.as_ref());
             assert_eq!(wire_echo, inherited, "seed={seed:?} base={base:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod static_provider_auth_tests {
+    #[test]
+    fn only_opencode_go_is_classified_as_a_static_provider_key() {
+        assert!(super::uses_static_provider_api_key(Some("opencode-go")));
+        assert!(!super::uses_static_provider_api_key(Some("openai")));
+        assert!(!super::uses_static_provider_api_key(Some("xai")));
+        assert!(!super::uses_static_provider_api_key(None));
     }
 }

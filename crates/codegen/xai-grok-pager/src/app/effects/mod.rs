@@ -2046,6 +2046,12 @@ pub(crate) fn execute(
                     crate::provider_login::ProviderLoginProvider::OpenAi => {
                         xai_grok_shell::auth::provider_cli::login_openai_subscription(false).await
                     }
+                    crate::provider_login::ProviderLoginProvider::OpencodeZen => {
+                        match opencode_go_key.as_deref() {
+                            Some(key) => xai_grok_shell::auth::provider_cli::login_opencode_zen_with_key(key).await,
+                            None => Err(anyhow::anyhow!("OpenCode Zen API key is required")),
+                        }
+                    }
                     crate::provider_login::ProviderLoginProvider::OpencodeGo => {
                         match opencode_go_key.as_deref() {
                             Some(key) => {

@@ -171,9 +171,8 @@ pub fn howto_list_modal(previous_palette: Option<PaletteSnapshot>) -> ActiveModa
 /// Each variant wraps a `ModalConfirmation<R>` with its concrete result
 /// type plus any context needed for resolution (e.g., pending focus target).
 pub enum ActiveModal {
-    /// Secure entry for an OpenCode Go API key. The key only exists in this
-    /// editor until submission and is never added to prompt history.
     ProviderKeyInput {
+        provider: crate::provider_login::ProviderLoginProvider,
         // `ActiveModal` is public because it is held by public view state, but
         // this editor is intentionally crate-private implementation detail.
         #[allow(private_interfaces)]
@@ -660,7 +659,10 @@ impl ActiveModal {
                     "Save changes?"
                 }
             }
-            ActiveModal::ProviderKeyInput { .. } => "Connect OpenCode Go",
+            ActiveModal::ProviderKeyInput { provider, .. } => match provider {
+                crate::provider_login::ProviderLoginProvider::OpencodeZen => "Connect OpenCode Zen",
+                _ => "Connect OpenCode Go",
+            },
             ActiveModal::CommandPalette { .. } => "Commands",
             ActiveModal::SessionPicker { .. } => "Resume session",
             ActiveModal::ArgPicker {

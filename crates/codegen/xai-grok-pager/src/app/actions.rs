@@ -642,8 +642,10 @@ pub enum Action {
     OpenProviderLogin,
     /// Start authentication for a provider selected in the in-session picker.
     ConnectProvider(crate::provider_login::ProviderLoginProvider),
-    /// Submit the temporary, masked OpenCode Go API key from the provider modal.
-    SubmitOpencodeGoKey(String),
+    SubmitOpencodeKey {
+        provider: crate::provider_login::ProviderLoginProvider,
+        key: String,
+    },
     /// Cancel an in-progress login that was started from inside a session
     /// (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit

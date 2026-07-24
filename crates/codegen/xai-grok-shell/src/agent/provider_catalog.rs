@@ -19,10 +19,12 @@ use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
 
 pub const OPENAI_MODELS_DEV_URL: &str = "https://models.dev/api.json";
 pub const OPENCODE_GO_MODELS_URL: &str = "https://opencode.ai/zen/go/v1/models";
+pub const OPENCODE_ZEN_MODELS_URL: &str = "https://opencode.ai/zen/v1/models";
 const PROVIDER_CATALOG_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 const PROVIDER_CATALOG_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const OPENAI_PROVIDER_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENCODE_GO_PROVIDER_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
+const OPENCODE_ZEN_PROVIDER_BASE_URL: &str = "https://opencode.ai/zen/v1";
 const OPENCODE_GO_MESSAGES_FAMILIES: &[&str] = &["claude", "minimax", "qwen"];
 
 static PROVIDER_CATALOG_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -94,6 +96,12 @@ pub async fn load_opencode_go_catalog(cache_dir: &Path, api_key: Option<&str>) -
     load_opencode_go_catalog_with_client(cache_dir, &client, OPENCODE_GO_MODELS_URL, api_key).await
 }
 
+pub async fn load_opencode_zen_catalog(cache_dir: &Path, api_key: Option<&str>) -> ProviderCatalog {
+    let client = crate::http::shared_client();
+    load_opencode_zen_catalog_with_client(cache_dir, &client, OPENCODE_ZEN_MODELS_URL, api_key)
+        .await
+}
+
 pub fn load_cached_external_catalogs(
     cache_dir: &Path,
     include_opencode_go: bool,
@@ -107,6 +115,11 @@ pub fn load_cached_external_catalogs(
         let opencode =
             ProviderCatalogCache::new(cache_dir, ProviderId::OpencodeGo, OPENCODE_GO_MODELS_URL);
         if let Some(cached) = opencode.load_valid() {
+            entries.extend(cached);
+        }
+        let zen =
+            ProviderCatalogCache::new(cache_dir, ProviderId::OpencodeZen, OPENCODE_ZEN_MODELS_URL);
+        if let Some(cached) = zen.load_valid() {
             entries.extend(cached);
         }
     }
@@ -132,6 +145,29 @@ pub async fn load_opencode_go_catalog_with_client(
         Some(api_key),
         client,
         parse_opencode_go_catalog,
+    )
+    .await
+}
+
+pub async fn load_opencode_zen_catalog_with_client(
+    cache_dir: &Path,
+    client: &reqwest::Client,
+    url: &str,
+    api_key: Option<&str>,
+) -> ProviderCatalog {
+    let Some(api_key) = api_key.map(str::trim).filter(|key| !key.is_empty()) else {
+        return ProviderCatalog::unavailable(
+            ProviderId::OpencodeZen,
+            "OpenCode Zen model catalog unavailable: missing API key".to_owned(),
+        );
+    };
+    load_provider_catalog(
+        cache_dir,
+        ProviderId::OpencodeZen,
+        url,
+        Some(api_key),
+        client,
+        parse_opencode_zen_catalog,
     )
     .await
 }
@@ -475,6 +511,69 @@ pub(crate) fn parse_opencode_go_catalog(
             api_key: None,
             env_key: Some(EnvKeys::single("OPENCODE_API_KEY")),
             api_backend: backend,
+            auth_scheme: None,
+            reasoning_effort: None,
+            supports_reasoning_effort: false,
+            reasoning_efforts: Vec::new(),
+            extra_headers: IndexMap::new(),
+            context_window: nonzero_context(model.limit.context),
+            auto_compact_threshold_percent: None,
+            system_prompt_label: None,
+            api_base_url: None,
+            use_concise: false,
+            agent_type: config::DEFAULT_AGENT_TYPE.to_owned(),
+            inference_idle_timeout_secs: None,
+            max_retries: None,
+            hidden: false,
+            supported_in_api: true,
+            supports_backend_search: false,
+            compactions_remaining: None,
+            compaction_at_tokens: None,
+            show_model_fingerprint: false,
+            stream_tool_calls: None,
+            laziness_detector: config::LazinessDetectorPerModelConfig::default(),
+        });
+        let key = entry
+            .info
+            .id
+            .clone()
+            .unwrap_or_else(|| entry.info.model.clone());
+        entries.insert(key, entry);
+    }
+    if entries.is_empty() {
+        return Err(ProviderCatalogError::EmptyCatalog);
+    }
+    Ok(entries)
+}
+
+pub(crate) fn parse_opencode_zen_catalog(
+    value: &Value,
+) -> Result<IndexMap<String, ModelEntry>, ProviderCatalogError> {
+    let catalog: OpenCodeGoCatalog = serde_json::from_value(value.clone())?;
+    let mut entries = IndexMap::new();
+    for model in catalog.data {
+        if model.id.trim().is_empty() {
+            continue;
+        }
+        let is_free = model.id.to_ascii_lowercase().contains("free");
+        let name = model.name.unwrap_or_else(|| model.id.clone());
+        let entry = model_entry_from_config(ModelEntryConfig {
+            id: Some(ProviderId::OpencodeZen.catalog_key(&model.id)),
+            provider_id: Some(ProviderId::OpencodeZen),
+            model: model.id.clone(),
+            base_url: OPENCODE_ZEN_PROVIDER_BASE_URL.to_owned(),
+            name: Some(if is_free {
+                format!("{name} · Free")
+            } else {
+                name
+            }),
+            description: is_free.then(|| "Free OpenCode Zen model".to_owned()),
+            max_completion_tokens: model.limit.output,
+            temperature: None,
+            top_p: None,
+            api_key: None,
+            env_key: Some(EnvKeys::single("OPENCODE_API_KEY")),
+            api_backend: opencode_backend_for(&model),
             auth_scheme: None,
             reasoning_effort: None,
             supports_reasoning_effort: false,

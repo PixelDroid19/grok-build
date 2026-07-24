@@ -13,6 +13,7 @@ use crate::sampling::ApiBackend;
 pub enum ProviderId {
     Xai,
     OpenAi,
+    OpencodeZen,
     OpencodeGo,
     Custom(String),
 }
@@ -20,6 +21,7 @@ pub enum ProviderId {
 impl ProviderId {
     pub const XAI: &'static str = "xai";
     pub const OPENAI: &'static str = "openai";
+    pub const OPENCODE_ZEN: &'static str = "opencode-zen";
     pub const OPENCODE_GO: &'static str = "opencode-go";
     pub const CUSTOM_PREFIX: &'static str = "custom:";
 
@@ -28,6 +30,7 @@ impl ProviderId {
         match raw {
             Self::XAI => Self::Xai,
             Self::OPENAI => Self::OpenAi,
+            Self::OPENCODE_ZEN => Self::OpencodeZen,
             Self::OPENCODE_GO => Self::OpencodeGo,
             _ => raw
                 .strip_prefix(Self::CUSTOM_PREFIX)
@@ -44,6 +47,7 @@ impl ProviderId {
         match self {
             Self::Xai => Self::XAI,
             Self::OpenAi => Self::OPENAI,
+            Self::OpencodeZen => Self::OPENCODE_ZEN,
             Self::OpencodeGo => Self::OPENCODE_GO,
             Self::Custom(id) => id.as_str(),
         }
@@ -53,6 +57,7 @@ impl ProviderId {
         match self {
             Self::Xai => model_id.to_owned(),
             Self::OpenAi => format!("{}:{model_id}", Self::OPENAI),
+            Self::OpencodeZen => format!("{}:{model_id}", Self::OPENCODE_ZEN),
             Self::OpencodeGo => format!("{}:{model_id}", Self::OPENCODE_GO),
             Self::Custom(id) => format!("{}{}:{model_id}", Self::CUSTOM_PREFIX, id),
         }
@@ -66,6 +71,9 @@ impl ProviderId {
         }
         if let Some(model) = value.strip_prefix("openai:") {
             return (Self::OpenAi, model);
+        }
+        if let Some(model) = value.strip_prefix("opencode-zen:") {
+            return (Self::OpencodeZen, model);
         }
         if let Some(model) = value.strip_prefix("opencode-go:") {
             return (Self::OpencodeGo, model);

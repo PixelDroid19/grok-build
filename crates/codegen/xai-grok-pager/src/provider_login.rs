@@ -8,16 +8,18 @@ use xai_grok_shell::agent::model_providers::ProviderId;
 pub enum ProviderLoginProvider {
     Xai,
     OpenAi,
+    OpencodeZen,
     OpencodeGo,
 }
 
 impl ProviderLoginProvider {
-    pub const ALL: [Self; 3] = [Self::Xai, Self::OpenAi, Self::OpencodeGo];
+    pub const ALL: [Self; 4] = [Self::Xai, Self::OpenAi, Self::OpencodeZen, Self::OpencodeGo];
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "xai" => Some(Self::Xai),
             "openai" => Some(Self::OpenAi),
+            "opencode" | "opencode-zen" | "zen" => Some(Self::OpencodeZen),
             "opencode-go" | "opencodego" | "opengo" => Some(Self::OpencodeGo),
             _ => None,
         }
@@ -27,6 +29,7 @@ impl ProviderLoginProvider {
         match self {
             Self::Xai => ProviderId::Xai,
             Self::OpenAi => ProviderId::OpenAi,
+            Self::OpencodeZen => ProviderId::OpencodeZen,
             Self::OpencodeGo => ProviderId::OpencodeGo,
         }
     }
@@ -35,6 +38,7 @@ impl ProviderLoginProvider {
         match self {
             Self::Xai => "xai",
             Self::OpenAi => "openai",
+            Self::OpencodeZen => "opencode-zen",
             Self::OpencodeGo => "opencode-go",
         }
     }
@@ -43,6 +47,7 @@ impl ProviderLoginProvider {
         match self {
             Self::Xai => "xAI",
             Self::OpenAi => "OpenAI",
+            Self::OpencodeZen => "OpenCode Zen (Free models)",
             Self::OpencodeGo => "OpenCode Go",
         }
     }
@@ -91,6 +96,11 @@ mod tests {
                     connected: true,
                 },
                 ProviderLoginRow {
+                    provider: ProviderLoginProvider::OpencodeZen,
+                    label: "OpenCode Zen (Free models)",
+                    connected: false,
+                },
+                ProviderLoginRow {
                     provider: ProviderLoginProvider::OpencodeGo,
                     label: "OpenCode Go",
                     connected: false,
@@ -101,6 +111,10 @@ mod tests {
 
     #[test]
     fn accepts_provider_ids_used_by_the_cli() {
+        assert_eq!(
+            ProviderLoginProvider::parse("opencode-zen"),
+            Some(ProviderLoginProvider::OpencodeZen)
+        );
         assert_eq!(
             ProviderLoginProvider::parse("xai"),
             Some(ProviderLoginProvider::Xai)

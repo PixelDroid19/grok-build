@@ -103,6 +103,32 @@ pub async fn login_opencode_go_with_key(key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn login_opencode_zen_with_key(key: &str) -> anyhow::Result<()> {
+    if key.trim().is_empty() {
+        bail!("OpenCode Zen API key is empty");
+    }
+    super::store_provider_api_key(
+        &crate::util::grok_home::grok_home(),
+        OPENCODE_GO_API_KEY_SCOPE,
+        key,
+    )?;
+    let catalog = crate::agent::provider_catalog::load_opencode_zen_catalog(
+        &crate::util::grok_home::grok_home(),
+        Some(key.trim()),
+    )
+    .await;
+    if catalog.is_unavailable() {
+        eprintln!(
+            "Warning: {}",
+            catalog
+                .warning
+                .unwrap_or_else(|| "OpenCode Zen model catalog is unavailable".to_owned())
+        );
+    }
+    println!("Signed in to OpenCode Zen.");
+    Ok(())
+}
+
 pub async fn logout_openai_subscription() -> anyhow::Result<()> {
     OpenAiSubscriptionAuthManager::shared_default(&crate::util::grok_home::grok_home())
         .clear()
@@ -143,7 +169,7 @@ pub async fn provider_status(provider: &str) -> anyhow::Result<String> {
                 ),
             })
         }
-        "opencode-go" => Ok(
+        "opencode-go" | "opencode-zen" => Ok(
             if super::read_provider_api_key(
                 &crate::util::grok_home::grok_home(),
                 OPENCODE_GO_API_KEY_SCOPE,
@@ -151,9 +177,9 @@ pub async fn provider_status(provider: &str) -> anyhow::Result<String> {
             .is_some()
                 || std::env::var("OPENCODE_API_KEY").is_ok()
             {
-                "opencode-go: connected".to_owned()
+                format!("{provider}: connected")
             } else {
-                "opencode-go: disconnected".to_owned()
+                format!("{provider}: disconnected")
             },
         ),
         _ => bail!("unsupported provider status: {provider}"),
@@ -177,7 +203,7 @@ pub fn provider_is_authenticated(provider: &str) -> bool {
             .ok()
             .flatten()
             .is_some(),
-        "opencode-go" => {
+        "opencode-go" | "opencode-zen" => {
             super::read_provider_api_key(&home, OPENCODE_GO_API_KEY_SCOPE).is_some()
                 || std::env::var("OPENCODE_API_KEY")
                     .ok()

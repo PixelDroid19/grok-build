@@ -16,7 +16,7 @@ impl SlashCommand for LoginCommand {
     }
 
     fn usage(&self) -> &str {
-        "/login [xai|openai|opencode-go]"
+        "/login [xai|openai|opencode-zen|opencode-go]"
     }
 
     fn takes_args(&self) -> bool {
@@ -29,6 +29,9 @@ impl SlashCommand for LoginCommand {
                 ProviderLoginProvider::Xai => false,
                 ProviderLoginProvider::OpenAi => {
                     xai_grok_shell::auth::provider_cli::provider_is_authenticated("openai")
+                }
+                ProviderLoginProvider::OpencodeZen => {
+                    xai_grok_shell::auth::provider_cli::provider_is_authenticated("opencode-zen")
                 }
                 ProviderLoginProvider::OpencodeGo => {
                     xai_grok_shell::auth::provider_cli::provider_is_authenticated("opencode-go")

@@ -253,8 +253,13 @@ impl ModelsManager {
             })
         {
             for entry in cached_external.values_mut().filter(|entry| {
-                entry.info.provider_id
-                    == Some(crate::agent::model_providers::ProviderId::OpencodeGo)
+                entry.info.provider_id.as_ref().is_some_and(|provider| {
+                    matches!(
+                        provider,
+                        crate::agent::model_providers::ProviderId::OpencodeGo
+                            | crate::agent::model_providers::ProviderId::OpencodeZen
+                    )
+                })
             }) {
                 entry.api_key = Some(key.clone());
             }
@@ -594,20 +599,28 @@ impl ModelsManager {
         let opencode_key = std::env::var("OPENCODE_API_KEY").ok().or_else(|| {
             crate::auth::read_provider_api_key(&cache_dir, crate::auth::OPENCODE_GO_API_KEY_SCOPE)
         });
-        let (openai, mut opencode) = tokio::join!(
+        let (openai, mut opencode_go, mut opencode_zen) = tokio::join!(
             crate::agent::provider_catalog::load_openai_catalog(&cache_dir),
             crate::agent::provider_catalog::load_opencode_go_catalog(
                 &cache_dir,
                 opencode_key.as_deref(),
-            )
+            ),
+            crate::agent::provider_catalog::load_opencode_zen_catalog(
+                &cache_dir,
+                opencode_key.as_deref(),
+            ),
         );
         if let Some(key) = opencode_key {
-            for entry in opencode.entries.values_mut() {
+            for entry in opencode_go
+                .entries
+                .values_mut()
+                .chain(opencode_zen.entries.values_mut())
+            {
                 entry.api_key = Some(key.clone());
             }
         }
 
-        for catalog in [&openai, &opencode] {
+        for catalog in [&openai, &opencode_go, &opencode_zen] {
             if let Some(warning) = catalog.warning.as_deref() {
                 tracing::warn!(
                     provider = %catalog.provider_id,
@@ -620,7 +633,8 @@ impl ModelsManager {
 
         let mut external = IndexMap::new();
         external.extend(openai.entries);
-        external.extend(opencode.entries);
+        external.extend(opencode_go.entries);
+        external.extend(opencode_zen.entries);
         *self.inner.external_models.write() = external;
 
         let cfg = self.inner.cfg.read().clone();
