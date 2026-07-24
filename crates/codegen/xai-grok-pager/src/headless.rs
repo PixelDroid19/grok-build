@@ -918,6 +918,14 @@ pub async fn run_single_turn(
         xai_grok_shell::agent::folder_trust::grant_folder_trust(&cwd);
     }
 
+    let selected_external_provider = options
+        .model
+        .as_deref()
+        .is_some_and(|model| model.starts_with("openai:") || model.starts_with("opencode-go:"));
+    let xai_connected = xai_grok_shell::auth::provider_cli::has_xai_provider_auth(&agent_config);
+    let external_only =
+        !xai_connected && xai_grok_shell::auth::provider_cli::has_non_xai_provider_auth();
+
     let cancel = CancellationToken::new();
     let memory_config = agent_config.memory_config.clone();
     let spawned = match spawn_grok_shell(agent_config, &cancel, memory_config).await {
@@ -959,18 +967,25 @@ pub async fn run_single_turn(
     // Authenticate using agent defaultAuthMethodId (preferred_method pin).
     let t_auth = Instant::now();
     let default_auth_method_id = crate::acp::parse_default_auth_method_id(init_resp.meta.as_ref());
-    let is_api_key_auth = match authenticate(
-        &acp_tx,
-        &init_resp.auth_methods,
-        default_auth_method_id.as_ref(),
-    )
-    .await
-    {
-        Ok(is_api_key) => is_api_key,
-        Err(e) => {
-            emitter.on_error(&e.to_string());
-            cancel.cancel();
-            return Err(e);
+    let is_api_key_auth = if selected_external_provider || external_only {
+        options
+            .model
+            .as_deref()
+            .is_some_and(|model| model.starts_with("opencode-go:"))
+    } else {
+        match authenticate(
+            &acp_tx,
+            &init_resp.auth_methods,
+            default_auth_method_id.as_ref(),
+        )
+        .await
+        {
+            Ok(is_api_key) => is_api_key,
+            Err(e) => {
+                emitter.on_error(&e.to_string());
+                cancel.cancel();
+                return Err(e);
+            }
         }
     };
     tracing::debug!(

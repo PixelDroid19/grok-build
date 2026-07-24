@@ -669,6 +669,9 @@ async fn eager_auth_or_login_fallback(
     AuthStartMode,
     Option<serde_json::Value>,
 ) {
+    if xai_grok_shell::auth::provider_cli::has_non_xai_provider_auth() {
+        return (false, login_label, login_method_id, auth_start_mode, None);
+    }
     if auth_methods.is_empty() {
         // preferred_method pin unavailable — fail closed, no invented method.
         return (true, None, None, AuthStartMode::Pending, None);

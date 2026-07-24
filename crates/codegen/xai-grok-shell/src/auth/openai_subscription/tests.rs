@@ -5,7 +5,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::Client;
 use serde_json::json;
@@ -24,10 +24,10 @@ use super::oauth::{
 };
 use super::storage::OpenAiAuthStorage;
 
-async fn send_callback_request(url: &str) {
+async fn send_callback_request(url: &str) -> StatusCode {
     for _ in 0..30 {
-        if Client::new().get(url).send().await.is_ok() {
-            return;
+        if let Ok(response) = Client::new().get(url).send().await {
+            return response.status();
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -178,9 +178,7 @@ async fn browser_callback_listener_returns_code_on_success() {
     ));
 
     let callback_url = format!("{redirect_uri}?code=auth-code-success&state=state-success");
-    send_callback_request(&callback_url).await;
-    let response = Client::new().get(&callback_url).send().await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(send_callback_request(&callback_url).await, StatusCode::OK);
 
     let code = callback.await.unwrap().unwrap();
     assert_eq!(code, "auth-code-success");
@@ -198,9 +196,10 @@ async fn browser_callback_listener_reports_state_mismatch() {
     ));
 
     let callback_url = format!("{redirect_uri}?code=auth-code&state=wrong-state");
-    send_callback_request(&callback_url).await;
-    let response = Client::new().get(&callback_url).send().await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        send_callback_request(&callback_url).await,
+        StatusCode::BAD_REQUEST
+    );
 
     let err = callback.await.unwrap().unwrap_err();
     assert!(err.to_string().contains("state"));
@@ -417,11 +416,11 @@ async fn headless_device_flow_treats_403_and_404_as_pending() {
         };
         let cancel = CancellationToken::new();
 
-        let exchange = tokio::spawn(exchange_device_authorization(
-            &server.endpoints(),
-            auth,
-            cancel.clone(),
-        ));
+        let endpoints = server.endpoints();
+        let exchange_cancel = cancel.clone();
+        let exchange = tokio::spawn(async move {
+            exchange_device_authorization(&endpoints, auth, exchange_cancel).await
+        });
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!exchange.is_finished());
 

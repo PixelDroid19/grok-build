@@ -37,7 +37,69 @@ Running `grok login` starts the sign-in flow again, replacing your cached sessio
 | `--oauth` | Sign in through SpaceXAI OAuth at `auth.x.ai`. This is the default, so the flag is optional. |
 | `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
 
-To sign out, run `grok logout`. It takes no flags and clears your cached credentials.
+To sign out from xAI, run `grok logout` or `grok logout --provider xai`.
+
+---
+
+## OpenAI ChatGPT subscription
+
+OpenAI authentication is independent from xAI. A working xAI subscription is
+not required:
+
+```bash
+grok login --provider openai
+```
+
+For a remote or headless machine:
+
+```bash
+grok login --provider openai --device-auth
+```
+
+The OpenAI credentials are stored separately in
+`~/.grok/openai-auth.json`, refreshed automatically and used directly with
+the Codex Responses backend. Grok does not execute Codex CLI, OpenCode, or any
+other external CLI. Models are loaded from `https://models.dev/api.json`,
+cached for five minutes, and exposed as `openai:<model>`.
+
+This ChatGPT subscription transport mirrors OpenCode's Codex integration and
+uses `https://chatgpt.com/backend-api/codex/responses`. That endpoint is not a
+public, stable OpenAI API and can change independently of this project.
+
+```bash
+grok logout --provider openai
+grok auth-status --provider openai
+```
+
+## OpenCode Go subscription
+
+OpenCode Go uses its own API key and model catalog:
+
+```bash
+export OPENCODE_API_KEY="..."
+grok login --provider opencode-go
+```
+
+To avoid keeping the key in the environment:
+
+```bash
+printf '%s' "$OPENCODE_API_KEY" | \
+  grok login --provider opencode-go --api-key-stdin
+```
+
+The key is stored with owner-only permissions in `~/.grok/auth.json`. Models
+come from `https://opencode.ai/zen/go/v1/models` and are exposed as
+`opencode-go:<model>`.
+
+```bash
+grok logout --provider opencode-go
+grok auth-status
+```
+
+When several providers are connected, one conversation can switch between
+their qualified model IDs. Visible messages, local tool calls, tool results,
+and file context remain in the conversation; provider-owned reasoning and
+server-tool continuation metadata are removed at the provider boundary.
 
 ---
 

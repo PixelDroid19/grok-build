@@ -31,7 +31,7 @@ use std::net::SocketAddr;
 use tokio_util::sync::CancellationToken;
 use xai_grok_pager::app::{
     AgentCmd, Command, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand, LeaderTargetArgs,
-    PagerArgs, join_early_prefetch, resolve_use_leader,
+    LoginProvider, PagerArgs, join_early_prefetch, resolve_use_leader,
 };
 use xai_grok_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
 use xai_grok_pager::client_identity::PAGER_CLIENT_VERSION;
@@ -1948,6 +1948,8 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 .await;
             }
             Command::Login {
+                provider,
+                api_key_stdin,
                 legacy: _,
                 oauth,
                 device_auth,
@@ -1955,21 +1957,88 @@ async fn async_main(args: PagerArgs) -> Result<()> {
             } => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                let config = xai_grok_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                xai_grok_shell::auth::run_cli_login(&config, oauth, device_auth, devbox).await?;
+                if api_key_stdin && provider != LoginProvider::OpencodeGo {
+                    anyhow::bail!("--api-key-stdin is only valid with --provider opencode-go");
+                }
+                match provider {
+                    LoginProvider::Xai => {
+                        let config = xai_grok_shell::config::load_effective_config_disk_only()
+                            .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+                        let config = AgentConfig::new_from_toml_cfg(&config)
+                            .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                        xai_grok_shell::auth::run_cli_login(&config, oauth, device_auth, devbox)
+                            .await?;
+                    }
+                    LoginProvider::Openai => {
+                        xai_grok_shell::auth::provider_cli::login_openai_subscription(device_auth)
+                            .await?;
+                    }
+                    LoginProvider::OpencodeGo => {
+                        xai_grok_shell::auth::provider_cli::login_opencode_go(api_key_stdin)
+                            .await?;
+                    }
+                }
                 println!();
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
-            Command::Logout => {
+            Command::Logout { provider } => {
                 init_tracing_simple("cli");
-                let config = xai_grok_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                xai_grok_shell::auth::run_cli_logout(&config)?;
+                match provider {
+                    LoginProvider::Xai => {
+                        let config = xai_grok_shell::config::load_effective_config_disk_only()
+                            .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+                        let config = AgentConfig::new_from_toml_cfg(&config)
+                            .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                        xai_grok_shell::auth::run_cli_logout(&config)?;
+                    }
+                    LoginProvider::Openai => {
+                        xai_grok_shell::auth::provider_cli::logout_openai_subscription().await?;
+                    }
+                    LoginProvider::OpencodeGo => {
+                        xai_grok_shell::auth::provider_cli::logout_opencode_go()?;
+                    }
+                }
+                xai_grok_shell::instrumentation::finalize_and_exit(0);
+            }
+            Command::AuthStatus { provider } => {
+                init_tracing_simple("cli");
+                let providers = provider.map(|provider| vec![provider]).unwrap_or_else(|| {
+                    vec![
+                        LoginProvider::Xai,
+                        LoginProvider::Openai,
+                        LoginProvider::OpencodeGo,
+                    ]
+                });
+                for provider in providers {
+                    match provider {
+                        LoginProvider::Xai => {
+                            let config = xai_grok_shell::config::load_effective_config_disk_only()
+                                .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+                            let config = AgentConfig::new_from_toml_cfg(&config).map_err(|e| {
+                                anyhow::anyhow!("Failed to create agent config: {e}")
+                            })?;
+                            let connected =
+                                xai_grok_shell::auth::provider_cli::has_xai_provider_auth(&config);
+                            println!(
+                                "xai: {}",
+                                if connected {
+                                    "connected"
+                                } else {
+                                    "disconnected"
+                                }
+                            );
+                        }
+                        LoginProvider::Openai | LoginProvider::OpencodeGo => {
+                            println!(
+                                "{}",
+                                xai_grok_shell::auth::provider_cli::provider_status(
+                                    &provider.to_string()
+                                )
+                                .await?
+                            );
+                        }
+                    }
+                }
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
             Command::Wrap(ref wrap_args) => {

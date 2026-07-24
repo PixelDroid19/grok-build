@@ -2125,6 +2125,7 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
     xai_grok_sampling_types::SamplingConfig {
         base_url: "https://api.test/v1".to_string(),
         model: model_slug.to_string(),
+        provider_id: None,
         max_completion_tokens: None,
         temperature: None,
         top_p: None,

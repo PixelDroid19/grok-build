@@ -1,6 +1,6 @@
 //! CLI argument parsing for the pager.
 pub use crate::headless::OutputFormat;
-use clap::{ArgAction, Parser, Subcommand, ValueHint};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum, ValueHint};
 use clap_complete::Shell;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,9 +20,24 @@ pub enum Command {
     /// Manage running leader processes
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
-    Logout,
+    Logout {
+        /// Provider to disconnect. Defaults to xAI for backwards compatibility.
+        #[arg(long, value_enum, default_value_t = LoginProvider::Xai)]
+        provider: LoginProvider,
+    },
+    /// Show independent connection status for each model provider.
+    AuthStatus {
+        #[arg(long, value_enum)]
+        provider: Option<LoginProvider>,
+    },
     /// Sign in to Grok
     Login {
+        /// Provider to authenticate. Defaults to xAI for backwards compatibility.
+        #[arg(long, value_enum, default_value_t = LoginProvider::Xai)]
+        provider: LoginProvider,
+        /// Read an OpenCode Go API key from stdin instead of the environment.
+        #[arg(long, requires = "provider")]
+        api_key_stdin: bool,
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
@@ -140,6 +155,24 @@ See ~/.grok/README.md for more information.
     /// `~/.grok/config.toml` or when the `GROK_AGENT_DASHBOARD=0` env
     /// var is set.
     Dashboard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LoginProvider {
+    Xai,
+    Openai,
+    #[value(name = "opencode-go", alias = "opengo")]
+    OpencodeGo,
+}
+
+impl std::fmt::Display for LoginProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Xai => "xai",
+            Self::Openai => "openai",
+            Self::OpencodeGo => "opencode-go",
+        })
+    }
 }
 /// Arguments for the `wrap` subcommand: the command to run, then its args.
 #[derive(Debug, clap::Args, Clone)]
@@ -1337,8 +1370,45 @@ mod tests {
     #[test]
     fn subcommand_takes_precedence_over_positional_prompt() {
         let args = PagerArgs::try_parse_from(["grok", "logout"]).expect("subcommand parses");
-        assert!(matches!(args.command, Some(Command::Logout)));
+        assert!(matches!(
+            args.command,
+            Some(Command::Logout {
+                provider: LoginProvider::Xai
+            })
+        ));
         assert!(args.prompt.is_none());
+    }
+    #[test]
+    fn provider_login_logout_and_status_parse() {
+        let login =
+            PagerArgs::try_parse_from(["grok", "login", "--provider", "openai", "--device-auth"])
+                .expect("OpenAI device login parses");
+        assert!(matches!(
+            login.command,
+            Some(Command::Login {
+                provider: LoginProvider::Openai,
+                device_auth: true,
+                ..
+            })
+        ));
+
+        let logout = PagerArgs::try_parse_from(["grok", "logout", "--provider", "opencode-go"])
+            .expect("OpenCode Go logout parses");
+        assert!(matches!(
+            logout.command,
+            Some(Command::Logout {
+                provider: LoginProvider::OpencodeGo
+            })
+        ));
+
+        let status = PagerArgs::try_parse_from(["grok", "auth-status", "--provider", "openai"])
+            .expect("provider auth status parses");
+        assert!(matches!(
+            status.command,
+            Some(Command::AuthStatus {
+                provider: Some(LoginProvider::Openai)
+            })
+        ));
     }
     #[test]
     fn positional_prompt_conflicts_with_headless_single() {

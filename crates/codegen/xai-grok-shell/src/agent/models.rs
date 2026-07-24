@@ -105,6 +105,9 @@ pub struct ModelsManager {
 
 struct Inner {
     prefetched: RwLock<Option<IndexMap<String, ModelEntry>>>,
+    /// Non-xAI catalogs are kept separately so an xAI ETag refresh cannot
+    /// accidentally remove models belonging to another authenticated provider.
+    external_models: RwLock<IndexMap<String, ModelEntry>>,
     models: RwLock<IndexMap<String, ModelEntry>>,
     current_model_id: RwLock<acp::ModelId>,
     current_reasoning_effort: RwLock<Option<ReasoningEffort>>,
@@ -176,6 +179,7 @@ impl ModelsManager {
         Self {
             inner: Arc::new(Inner {
                 prefetched: RwLock::new(prefetched),
+                external_models: RwLock::new(IndexMap::new()),
                 models: RwLock::new(models),
                 current_model_id: RwLock::new(current_model_id),
                 current_reasoning_effort: RwLock::new(current_reasoning_effort),
@@ -235,7 +239,27 @@ impl ModelsManager {
                 .map(|c| c.models)
         });
         let has_prefetched = prefetched_models.is_some();
-        let catalog = resolve_model_catalog(cfg, prefetched_models.clone());
+        let mut catalog = resolve_model_catalog(cfg, prefetched_models.clone());
+        let home = crate::util::grok_home::grok_home();
+        let opencode_connected =
+            crate::auth::provider_cli::provider_is_authenticated("opencode-go");
+        let mut cached_external = crate::agent::provider_catalog::load_cached_external_catalogs(
+            &home,
+            opencode_connected,
+        );
+        if opencode_connected
+            && let Some(key) = std::env::var("OPENCODE_API_KEY").ok().or_else(|| {
+                crate::auth::read_provider_api_key(&home, crate::auth::OPENCODE_GO_API_KEY_SCOPE)
+            })
+        {
+            for entry in cached_external.values_mut().filter(|entry| {
+                entry.info.provider_id
+                    == Some(crate::agent::model_providers::ProviderId::OpencodeGo)
+            }) {
+                entry.api_key = Some(key.clone());
+            }
+        }
+        catalog.extend(cached_external.clone());
 
         // Validate only against a real catalog; a bundled-only first run defers
         // to the async fetch (`apply_refresh_result`).
@@ -261,6 +285,7 @@ impl ModelsManager {
             auth_manager,
             cfg.clone(),
         );
+        *mgr.inner.external_models.write() = cached_external;
         if has_prefetched {
             *mgr.inner.has_fetched_real_catalog.write() = true;
         }
@@ -283,7 +308,8 @@ impl ModelsManager {
             return;
         }
         let prefetched = self.inner.prefetched.read().clone();
-        let new_catalog = resolve_model_catalog(&new_config, prefetched);
+        let mut new_catalog = resolve_model_catalog(&new_config, prefetched);
+        new_catalog.extend(self.inner.external_models.read().clone());
         let has_real_catalog = *self.inner.has_fetched_real_catalog.read();
         if has_real_catalog && let Err(e) = validate_selectable(&new_config, &new_catalog) {
             tracing::error!(error = %e, "ignoring config reload: allowed_models excludes all models");
@@ -556,7 +582,84 @@ impl ModelsManager {
     // ── Mutations ───────────────────────────────────────────────────
 
     fn rebuild(&self, cfg: &config::Config, prefetched: Option<IndexMap<String, ModelEntry>>) {
-        *self.inner.models.write() = resolve_model_catalog(cfg, prefetched);
+        let mut catalog = resolve_model_catalog(cfg, prefetched);
+        catalog.extend(self.inner.external_models.read().clone());
+        *self.inner.models.write() = catalog;
+    }
+
+    /// Refresh provider-owned catalogs without coupling them to xAI
+    /// authentication or its ETag lifecycle.
+    pub async fn refresh_external_catalogs(&self) {
+        let cache_dir = crate::util::grok_home::grok_home();
+        let openai = crate::agent::provider_catalog::load_openai_catalog(&cache_dir).await;
+        let opencode_key = std::env::var("OPENCODE_API_KEY").ok().or_else(|| {
+            crate::auth::read_provider_api_key(&cache_dir, crate::auth::OPENCODE_GO_API_KEY_SCOPE)
+        });
+        let mut opencode = crate::agent::provider_catalog::load_opencode_go_catalog(
+            &cache_dir,
+            opencode_key.as_deref(),
+        )
+        .await;
+        if let Some(key) = opencode_key {
+            for entry in opencode.entries.values_mut() {
+                entry.api_key = Some(key.clone());
+            }
+        }
+
+        for catalog in [&openai, &opencode] {
+            if let Some(warning) = catalog.warning.as_deref() {
+                tracing::warn!(
+                    provider = %catalog.provider_id,
+                    provenance = ?catalog.provenance,
+                    warning,
+                    "provider model catalog degraded"
+                );
+            }
+        }
+
+        let mut external = IndexMap::new();
+        external.extend(openai.entries);
+        external.extend(opencode.entries);
+        *self.inner.external_models.write() = external;
+
+        let cfg = self.inner.cfg.read().clone();
+        let prefetched = self.inner.prefetched.read().clone();
+        self.rebuild(&cfg, prefetched);
+        if self.inner.auth_manager.current_or_expired().is_none()
+            && !crate::agent::auth_method::has_xai_api_key_env()
+        {
+            let preferred = cfg.models.default.as_deref();
+            let selected = {
+                let models = self.inner.external_models.read();
+                preferred
+                    .and_then(|preferred| {
+                        models.iter().find(|(key, entry)| {
+                            (key.as_str() == preferred || entry.info.model == preferred)
+                                && entry.info.provider_id.as_ref().is_some_and(|provider| {
+                                    crate::auth::provider_cli::provider_is_authenticated(
+                                        provider.as_str(),
+                                    )
+                                })
+                        })
+                    })
+                    .or_else(|| {
+                        models.iter().find(|(_, entry)| {
+                            entry.info.provider_id.as_ref().is_some_and(|provider| {
+                                crate::auth::provider_cli::provider_is_authenticated(
+                                    provider.as_str(),
+                                )
+                            })
+                        })
+                    })
+                    .map(|(key, _)| key.clone())
+            };
+            if let Some(selected) = selected {
+                self.set_current_model_id(acp::ModelId::new(selected));
+            }
+        } else {
+            self.reselect_current_model_if_missing(&cfg);
+        }
+        self.notify_models_updated();
     }
 
     /// Refresh models when the etag changes.
@@ -918,7 +1021,7 @@ impl ModelsManager {
     /// Wipe in-memory state so a previous identity's catalog doesn't leak.
     fn clear(&self) {
         *self.inner.prefetched.write() = None;
-        *self.inner.models.write() = IndexMap::new();
+        *self.inner.models.write() = self.inner.external_models.read().clone();
         *self.inner.etag.write() = None;
         *self.inner.has_fetched_real_catalog.write() = false;
         self.inner

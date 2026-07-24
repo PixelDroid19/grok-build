@@ -1,6 +1,21 @@
 use super::*;
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use xai_chat_state::conversation_util::replace_or_insert_system_head;
+
+fn sanitize_provider_private_history(conversation: &mut Vec<ConversationItem>) {
+    conversation.retain_mut(|item| match item {
+        // Reasoning IDs and encrypted payloads are opaque continuations owned
+        // by the provider that produced them. A different provider cannot
+        // safely consume them.
+        ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_) => false,
+        ConversationItem::Assistant(assistant) => {
+            assistant.model_fingerprint = None;
+            true
+        }
+        _ => true,
+    });
+}
+
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         &self,
@@ -11,6 +26,23 @@ impl SessionActor {
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
         let model_id = acp::ModelId::new(sampling_config.model.clone());
+        let previous_provider = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .and_then(|config| config.provider_id);
+        let provider_changed = matches!(
+            (
+                previous_provider.as_deref(),
+                sampling_config.provider_id.as_deref()
+            ),
+            (Some(previous), Some(next)) if previous != next
+        );
+        if provider_changed {
+            let mut conversation = self.chat_state_handle.get_conversation().await;
+            sanitize_provider_private_history(&mut conversation);
+            self.chat_state_handle.replace_conversation(conversation);
+        }
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
                 std::num::NonZeroU64::new(DEFAULT_CONTEXT_WINDOW)
@@ -339,5 +371,44 @@ impl SessionActor {
                 "handle_replace_system_prompt: head already matches, no-op"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_switch_tests {
+    use std::sync::Arc;
+
+    use super::sanitize_provider_private_history;
+    use xai_grok_sampling_types::{AssistantItem, ConversationItem, ToolResultItem};
+
+    #[test]
+    fn provider_switch_preserves_messages_and_tool_results_but_drops_private_metadata() {
+        let mut conversation = vec![
+            ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(
+                "private reasoning",
+            )),
+            ConversationItem::Assistant(AssistantItem {
+                content: Arc::from("answer"),
+                tool_calls: Vec::new(),
+                model_id: Some("gpt-5.4".to_owned()),
+                model_fingerprint: Some("provider-fingerprint".to_owned()),
+                reasoning_effort: None,
+            }),
+            ConversationItem::ToolResult(ToolResultItem {
+                tool_call_id: "call-1".to_owned(),
+                content: Arc::from("tool output"),
+                images: Vec::new(),
+            }),
+        ];
+
+        sanitize_provider_private_history(&mut conversation);
+
+        assert_eq!(conversation.len(), 2);
+        let ConversationItem::Assistant(assistant) = &conversation[0] else {
+            panic!("assistant message was not preserved");
+        };
+        assert_eq!(assistant.content.as_ref(), "answer");
+        assert!(assistant.model_fingerprint.is_none());
+        assert!(matches!(conversation[1], ConversationItem::ToolResult(_)));
     }
 }

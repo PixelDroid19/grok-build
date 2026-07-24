@@ -241,14 +241,33 @@ pub async fn wait_and_exchange_browser_callback(
     cancel: CancellationToken,
 ) -> Result<TokenResponse, OpenAiAuthError> {
     let state = state.into();
+    let callback_redirect = redirect_uri.to_owned();
+    let callback_state = state.clone();
+    let callback_cancel = cancel.clone();
+    let callback = tokio::spawn(async move {
+        wait_for_browser_callback(
+            &callback_redirect,
+            &callback_state,
+            callback_cancel,
+            timeout,
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
     if open_in_browser {
         let auth_url = build_authorize_url(endpoints, &pkce, &state);
-        webbrowser::open(&auth_url).map_err(|error| {
-            OpenAiAuthError::Callback(format!("failed to open browser: {error}"))
-        })?;
+        if let Err(error) = webbrowser::open(&auth_url) {
+            cancel.cancel();
+            let _ = callback.await;
+            return Err(OpenAiAuthError::Callback(format!(
+                "failed to open browser: {error}"
+            )));
+        }
     }
 
-    let code = wait_for_browser_callback(redirect_uri, &state, cancel, timeout).await?;
+    let code = callback
+        .await
+        .map_err(|error| OpenAiAuthError::Callback(error.to_string()))??;
     exchange_code_for_tokens(endpoints, &code, redirect_uri, &pkce).await
 }
 

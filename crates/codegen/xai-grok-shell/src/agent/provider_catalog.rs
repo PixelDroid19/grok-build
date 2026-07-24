@@ -20,7 +20,7 @@ use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
 pub const OPENAI_MODELS_DEV_URL: &str = "https://models.dev/api.json";
 pub const OPENCODE_GO_MODELS_URL: &str = "https://opencode.ai/zen/go/v1/models";
 const PROVIDER_CATALOG_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
-const OPENAI_PROVIDER_BASE_URL: &str = "https://api.openai.com/v1";
+const OPENAI_PROVIDER_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENCODE_GO_PROVIDER_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 const OPENCODE_GO_MESSAGES_FAMILIES: &[&str] = &["claude", "minimax", "qwen"];
 const OPENCODE_GPT_OPENAI_MIN_VERSION: (u32, u32, u32) = (5, 4, 0);
@@ -92,6 +92,25 @@ pub async fn load_openai_catalog_with_client(
 pub async fn load_opencode_go_catalog(cache_dir: &Path, api_key: Option<&str>) -> ProviderCatalog {
     let client = crate::http::shared_client();
     load_opencode_go_catalog_with_client(cache_dir, &client, OPENCODE_GO_MODELS_URL, api_key).await
+}
+
+pub fn load_cached_external_catalogs(
+    cache_dir: &Path,
+    include_opencode_go: bool,
+) -> IndexMap<String, ModelEntry> {
+    let mut entries = IndexMap::new();
+    let openai = ProviderCatalogCache::new(cache_dir, ProviderId::OpenAi, OPENAI_MODELS_DEV_URL);
+    if let Some(cached) = openai.load_valid() {
+        entries.extend(cached);
+    }
+    if include_opencode_go {
+        let opencode =
+            ProviderCatalogCache::new(cache_dir, ProviderId::OpencodeGo, OPENCODE_GO_MODELS_URL);
+        if let Some(cached) = opencode.load_valid() {
+            entries.extend(cached);
+        }
+    }
+    entries
 }
 
 pub async fn load_opencode_go_catalog_with_client(
@@ -649,6 +668,10 @@ mod tests {
         assert!(entries.contains_key("openai:gpt-5.7-terra"));
         assert!(entries.contains_key("openai:gpt-5.10"));
         assert!(!entries.contains_key("openai:gpt-5.4-pro"));
+        assert_eq!(
+            entries["openai:gpt-5.4"].info.base_url,
+            "https://chatgpt.com/backend-api/codex"
+        );
         assert!(!entries.contains_key("openai:gpt-5.5-pro"));
         assert!(!entries.contains_key("openai:gpt-5.6-sol"));
 

@@ -3491,6 +3491,7 @@ async fn retry_after_lost_ack_converges_memory_and_disk_to_authoritative_item() 
         xai_grok_sampling_types::SamplingConfig {
             base_url: String::new(),
             model: String::new(),
+            provider_id: None,
             max_completion_tokens: None,
             temperature: None,
             top_p: None,

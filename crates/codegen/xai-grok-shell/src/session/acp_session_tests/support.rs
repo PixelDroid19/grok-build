@@ -215,6 +215,7 @@ pub(crate) async fn create_test_actor_ex(
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
             model: "test".to_string(),
+            provider_id: None,
             max_completion_tokens: None,
             temperature: None,
             top_p: None,

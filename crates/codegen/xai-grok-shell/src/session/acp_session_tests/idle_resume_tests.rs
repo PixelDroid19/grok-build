@@ -105,6 +105,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 xai_grok_sampling_types::SamplingConfig {
                     base_url: mock_url,
                     model: "test-model".to_string(),
+                    provider_id: None,
                     max_completion_tokens: Some(8192),
                     temperature: None,
                     top_p: None,
