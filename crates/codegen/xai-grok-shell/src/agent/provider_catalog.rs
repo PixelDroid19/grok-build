@@ -24,7 +24,6 @@ const PROVIDER_CATALOG_REQUEST_TIMEOUT: std::time::Duration = std::time::Duratio
 const OPENAI_PROVIDER_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENCODE_GO_PROVIDER_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 const OPENCODE_GO_MESSAGES_FAMILIES: &[&str] = &["claude", "minimax", "qwen"];
-const OPENCODE_GPT_OPENAI_MIN_VERSION: (u32, u32, u32) = (5, 4, 0);
 
 static PROVIDER_CATALOG_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -392,36 +391,10 @@ pub(crate) fn parse_openai_models_dev_catalog(
 }
 
 fn openai_model_is_opencode_compatible(model: &ModelsDevModel) -> bool {
-    const EXPLICIT_ALLOW: &[&str] = &["gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini"];
-    if EXPLICIT_ALLOW.contains(&model.id.as_str()) {
-        return true;
-    }
-    if model.id == "gpt-5.5-pro" || model.id.starts_with("gpt-5.6") {
-        return false;
-    }
-    if has_reasoning_mode_pro(&model.experimental) {
-        return false;
-    }
-    openai_gpt_numeric_version(&model.id)
-        .is_some_and(|version| version > OPENCODE_GPT_OPENAI_MIN_VERSION)
-}
-
-fn openai_gpt_numeric_version(id: &str) -> Option<(u32, u32, u32)> {
-    let suffix = id.strip_prefix("gpt-")?;
-    let versions = suffix
-        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .next()?;
-    let mut parts = versions.split('.');
-    let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts
-        .next()
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0);
-    let patch = parts
-        .next()
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0);
-    Some((major, minor, patch))
+    super::provider_catalog_policy::openai_model_is_opencode_compatible(
+        &model.id,
+        has_reasoning_mode_pro(&model.experimental),
+    )
 }
 
 fn has_reasoning_mode_pro(value: &Value) -> bool {
@@ -617,6 +590,10 @@ mod tests {
                         "id": "gpt-5.5-pro",
                         "limit": { "context": 1050000 }
                     },
+                    "gpt-5.6": {
+                        "id": "gpt-5.6",
+                        "limit": { "context": 1050000 }
+                    },
                     "gpt-5.6-sol": {
                         "id": "gpt-5.6-sol",
                         "limit": { "context": 1050000 }
@@ -632,6 +609,10 @@ mod tests {
                     "gpt-5.3-codex-spark": {
                         "id": "gpt-5.3-codex-spark",
                         "limit": { "context": 128000 }
+                    },
+                    "gpt-5.4-mini": {
+                        "id": "gpt-5.4-mini",
+                        "experimental": { "modes": { "pro": { "provider": { "body": { "reasoning": { "mode": "pro" }}}}}}
                     }
                 }
             }
@@ -670,12 +651,14 @@ mod tests {
         assert!(entries.contains_key("openai:gpt-5.7-terra"));
         assert!(entries.contains_key("openai:gpt-5.10"));
         assert!(!entries.contains_key("openai:gpt-5.4-pro"));
+        assert!(!entries.contains_key("openai:gpt-5.4-mini"));
         assert_eq!(
             entries["openai:gpt-5.4"].info.base_url,
             "https://chatgpt.com/backend-api/codex"
         );
         assert!(!entries.contains_key("openai:gpt-5.5-pro"));
-        assert!(!entries.contains_key("openai:gpt-5.6-sol"));
+        assert!(!entries.contains_key("openai:gpt-5.6"));
+        assert!(entries.contains_key("openai:gpt-5.6-sol"));
 
         let gpt54 = &entries["openai:gpt-5.4"];
         assert_eq!(gpt54.info.provider_id, Some(ProviderId::OpenAi));
