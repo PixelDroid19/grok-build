@@ -1,6 +1,7 @@
 use crate::agent::auth_method::ModelByok;
 use crate::agent::model_providers::{
-    ModelProviderConfig, auth_config_issues, model_provider_auth_name, parse_model_providers,
+    ModelProviderConfig, ProviderId, auth_config_issues, model_provider_auth_name,
+    parse_model_providers,
 };
 use crate::auth::{AuthManager, GrokComConfig, OidcAuthConfig};
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
@@ -3784,6 +3785,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero"));
             let config = ModelEntryConfig {
                 id: m.id,
+                provider_id: Some(ProviderId::Xai),
                 model: m.model,
                 base_url: endpoints.resolve_inference_base_url(),
                 api_base_url: Some(endpoints.xai_api_base_url.clone()),
@@ -3826,6 +3828,10 @@ pub struct ModelEntryConfig {
     /// used as the catalog map key. Falls back to `model` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Provider identity for namespaced catalogs. xAI defaults can remain
+    /// unqualified on disk and in persisted sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<ProviderId>,
     /// The routing slug sent in API requests.
     pub model: String,
     /// The base URL of the model. e.g. "https://api.x.ai/v1"
@@ -3957,6 +3963,7 @@ fn is_default_laziness_detector(cfg: &LazinessDetectorPerModelConfig) -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ConfigModelOverride {
+    pub provider_id: Option<ProviderId>,
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub name: Option<String>,
@@ -4016,6 +4023,9 @@ impl ConfigModelOverride {
         let mut entry = base.unwrap_or_else(|| ModelEntry::fallback(key, endpoints));
         if let Some(ref v) = self.model {
             entry.info.model = v.clone();
+        }
+        if let Some(ref v) = self.provider_id {
+            entry.info.provider_id = Some(v.clone());
         }
         if let Some(ref v) = self.base_url {
             entry.info.base_url = v.clone();
@@ -4126,6 +4136,10 @@ pub struct ModelInfo {
     /// Falls back to `model` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Stable provider identity. Kept separate from `model` because external
+    /// catalogs use namespaced ids while provider requests route the raw slug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<ProviderId>,
     /// The routing slug sent in API requests.
     pub model: String,
     /// The base URL of the model (session endpoint). e.g. "https://cli-chat-proxy.grok.com/v1"
@@ -4200,6 +4214,7 @@ impl ModelInfo {
         ModelInfo {
             user_selectable: true,
             id: None,
+            provider_id: Some(ProviderId::Xai),
             model: slug.to_owned(),
             base_url: String::new(),
             name: None,
@@ -4237,6 +4252,7 @@ impl ModelInfo {
         ModelInfo {
             user_selectable: true,
             id: entry.id.clone(),
+            provider_id: entry.provider_id.clone(),
             model: entry.model.clone(),
             base_url: entry.base_url.clone(),
             name: entry.name.clone(),
@@ -4977,6 +4993,7 @@ pub fn resolve_aux_model_sampling_config(
             info: ModelInfo {
                 user_selectable: true,
                 id: None,
+                provider_id: None,
                 model: catalog_entry
                     .map(|e| e.info.model)
                     .unwrap_or_else(|| model_id.to_owned()),
@@ -5212,6 +5229,7 @@ fn resolve_hidden_default_web_search_sampling_config(
     let entry = ModelEntry {
         info: ModelInfo {
             id: None,
+            provider_id: None,
             model: model_id.to_owned(),
             base_url: endpoints.resolve_inference_base_url(),
             name: None,
@@ -6391,6 +6409,7 @@ reasoning_effort = "low"
             info: ModelInfo {
                 user_selectable: true,
                 id: None,
+                provider_id: None,
                 model: model.to_string(),
                 base_url: base_url.to_string(),
                 name: None,
@@ -7415,6 +7434,7 @@ reasoning_effort = "low"
     fn model_info_from_config_propagates_use_concise() {
         let entry = ModelEntryConfig {
             id: None,
+            provider_id: None,
             model: "test".to_string(),
             base_url: "https://test.api/v1".to_string(),
             name: None,
@@ -7574,6 +7594,7 @@ reasoning_effort = "low"
     fn model_info_from_config_propagates_agent_type() {
         let entry = ModelEntryConfig {
             id: None,
+            provider_id: None,
             model: "test".to_string(),
             base_url: "https://test.api/v1".to_string(),
             name: None,
@@ -8025,6 +8046,7 @@ reasoning_effort = "low"
     fn inference_idle_timeout_propagates_to_model_info() {
         let entry = ModelEntryConfig {
             id: None,
+            provider_id: None,
             model: "test".to_string(),
             base_url: "https://test.api/v1".to_string(),
             name: None,
@@ -11793,6 +11815,7 @@ default = "grok-4.5"
             info: ModelInfo {
                 user_selectable: true,
                 id: None,
+                provider_id: None,
                 model: slug.to_owned(),
                 base_url: "https://test.example.com/v1".to_owned(),
                 name: Some(slug.to_owned()),

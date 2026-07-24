@@ -828,6 +828,9 @@ pub fn parse_remote_model_value(
         .unwrap_or_default();
     Some(crate::agent::config::ModelEntryConfig {
         id,
+        provider_id: get_string(obj, "providerId")
+            .or_else(|| get_string(obj, "provider_id"))
+            .map(crate::agent::model_providers::ProviderId::parse),
         model,
         base_url,
         name,

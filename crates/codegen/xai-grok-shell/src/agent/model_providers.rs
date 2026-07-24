@@ -4,9 +4,103 @@ use super::config::{ConfigModelOverride, EnvKeys};
 use super::config_model_override_parse::{ConfigWarning, ConfigWarningKind};
 use crate::sampling::ApiBackend;
 
+/// Provider identity carried with catalog entries separately from the model id.
+///
+/// External catalogs are keyed as `<provider>:<model>`. Legacy unqualified xAI
+/// ids remain accepted and resolve to `ProviderId::Xai` so existing Grok model
+/// ids keep working.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ProviderId {
+    Xai,
+    OpenAi,
+    OpencodeGo,
+    Custom(String),
+}
+
+impl ProviderId {
+    pub const XAI: &'static str = "xai";
+    pub const OPENAI: &'static str = "openai";
+    pub const OPENCODE_GO: &'static str = "opencode-go";
+    pub const CUSTOM_PREFIX: &'static str = "custom:";
+
+    pub fn parse(value: impl AsRef<str>) -> Self {
+        let raw = value.as_ref().trim();
+        match raw {
+            Self::XAI => Self::Xai,
+            Self::OPENAI => Self::OpenAi,
+            Self::OPENCODE_GO => Self::OpencodeGo,
+            _ => raw
+                .strip_prefix(Self::CUSTOM_PREFIX)
+                .map(|id| Self::Custom(id.to_owned()))
+                .unwrap_or_else(|| Self::Custom(raw.to_owned())),
+        }
+    }
+
+    pub fn from_provider_key(provider_key: &str) -> Self {
+        Self::parse(provider_key)
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Xai => Self::XAI,
+            Self::OpenAi => Self::OPENAI,
+            Self::OpencodeGo => Self::OPENCODE_GO,
+            Self::Custom(id) => id.as_str(),
+        }
+    }
+
+    pub fn catalog_key(&self, model_id: &str) -> String {
+        match self {
+            Self::Xai => model_id.to_owned(),
+            Self::OpenAi => format!("{}:{model_id}", Self::OPENAI),
+            Self::OpencodeGo => format!("{}:{model_id}", Self::OPENCODE_GO),
+            Self::Custom(id) => format!("{id}:{model_id}"),
+        }
+    }
+
+    pub fn parse_catalog_key(value: &str) -> (Self, &str) {
+        if let Some(model) = value.strip_prefix("openai:") {
+            return (Self::OpenAi, model);
+        }
+        if let Some(model) = value.strip_prefix("opencode-go:") {
+            return (Self::OpencodeGo, model);
+        }
+        if let Some(model) = value.strip_prefix("xai:") {
+            return (Self::Xai, model);
+        }
+        (Self::Xai, value)
+    }
+}
+
+impl std::fmt::Display for ProviderId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl serde::Serialize for ProviderId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ProviderId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(Self::parse(value))
+    }
+}
+
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ModelProviderConfig {
+    pub provider_id: Option<ProviderId>,
     pub base_url: Option<String>,
     pub api_base_url: Option<String>,
     pub env_key: Option<EnvKeys>,
@@ -174,6 +268,7 @@ impl ConfigModelOverride {
         provider_id: &str,
     ) -> Self {
         let ModelProviderConfig {
+            provider_id: provider_identity,
             base_url,
             api_base_url,
             env_key,
@@ -188,7 +283,11 @@ impl ConfigModelOverride {
         } = provider;
 
         let mut merged = self.clone();
-        merged.model_provider = None;
+        merged.provider_id = merged
+            .provider_id
+            .clone()
+            .or_else(|| provider_identity.clone())
+            .or_else(|| Some(ProviderId::from_provider_key(provider_id)));
         merged.base_url = merged.base_url.or_else(|| base_url.clone());
         merged.api_base_url = merged.api_base_url.or_else(|| api_base_url.clone());
         merged.api_backend = merged.api_backend.or_else(|| api_backend.clone());
@@ -222,19 +321,26 @@ impl ConfigModelOverride {
 
     pub(crate) fn with_missing_provider(&self) -> Self {
         let mut merged = self.clone();
-        merged.model_provider = None;
+        merged.provider_id = merged.provider_id.clone().or_else(|| {
+            merged
+                .model_provider
+                .as_deref()
+                .map(ProviderId::from_provider_key)
+        });
         merged
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::ProviderId;
     use crate::agent::config::{Config, resolve_credentials, resolve_model_list};
     #[test]
     fn model_inherits_provider_connection_defaults() {
         let raw_config: toml::Value = toml::from_str(
             r#"
             [model_providers.gateway]
+            provider_id = "openai"
             base_url = "https://gateway.example/v1"
             context_window = 123456
 
@@ -252,6 +358,7 @@ mod tests {
         assert!(cfg.model_providers.contains_key("gateway"));
         let resolved = resolve_model_list(&cfg, None);
         let model = resolved.get("via-gateway").expect("model should exist");
+        assert_eq!(model.info.provider_id, Some(ProviderId::OpenAi));
         assert_eq!(model.info.base_url, "https://gateway.example/v1");
         assert_eq!(model.info.context_window.get(), 123456);
         assert_eq!(
@@ -266,6 +373,30 @@ mod tests {
             resolve_credentials(model, Some("session-jwt")).api_key,
             None,
             "the session token must not leak to the provider's custom endpoint"
+        );
+    }
+
+    #[test]
+    fn model_provider_reference_preserves_custom_identity_when_defaults_merge() {
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [model_providers.gateway]
+            base_url = "https://gateway.example/v1"
+
+            [model.via-gateway]
+            model = "m"
+            model_provider = "gateway"
+            context_window = 200000
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+        let resolved = resolve_model_list(&cfg, None);
+        let model = resolved.get("via-gateway").expect("model should exist");
+        assert_eq!(
+            model.info.provider_id,
+            Some(ProviderId::Custom("gateway".to_owned()))
         );
     }
 
