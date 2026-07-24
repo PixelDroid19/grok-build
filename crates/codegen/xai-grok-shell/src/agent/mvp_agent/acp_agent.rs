@@ -76,6 +76,10 @@ impl acp::Agent for MvpAgent {
     ) -> Result<acp::InitializeResponse, acp::Error> {
         tracing::debug!(target: "sampling_log", "Received initialize request");
         xai_grok_telemetry::unified_log::info("agent initialized", None, None);
+        // Provider catalogs must be ready before the InitializeResponse model
+        // snapshot is built. A detached refresh races `grok models` and
+        // headless `-m openai:*` on first launch.
+        self.models_manager.refresh_external_catalogs().await;
         self.start_subagent_coordinator();
         let (auto_gc_policy, run_auto_gc) = {
             let cfg = self.cfg.borrow();
