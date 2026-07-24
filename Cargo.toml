@@ -379,13 +379,13 @@ opt-level = 0
 lto = false
 incremental = true
 
-# Unit tests do not need full DWARF for routine local validation. Keeping the
-# incremental cache while omitting debug symbols avoids a second multi-gigabyte
-# copy of this workspace's dependency graph.
+# Unit tests do not need full DWARF for routine local validation. Incremental
+# test artifacts add several gigabytes in this monorepo, so focused pure-policy
+# tests are kept separate and the full test profile favors bounded disk usage.
 [profile.test]
 codegen-units = 128
 debug = 0
-incremental = true
+incremental = false
 opt-level = 0
 
 [profile.bench]
