@@ -75,6 +75,10 @@ pub async fn login_opencode_go(api_key_stdin: bool) -> anyhow::Result<()> {
             "OPENCODE_API_KEY is not set; set it or pipe the key to `grok login --provider opencode-go --api-key-stdin`",
         )?
     };
+    login_opencode_go_with_key(&key).await
+}
+
+pub async fn login_opencode_go_with_key(key: &str) -> anyhow::Result<()> {
     if key.trim().is_empty() {
         bail!("OpenCode Go API key is empty");
     }

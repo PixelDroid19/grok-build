@@ -45,6 +45,107 @@ use xai_grok_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
 };
 use xai_grok_update::{UpdateConfig, auto_update, enforce_version_policy_or_exit};
+
+mod initial_provider;
+use initial_provider::{
+    InitialProviderChoice, needs_initial_provider_selection, parse_initial_provider_choice,
+};
+
+#[cfg(unix)]
+fn read_secret_line(prompt: &str) -> Result<String> {
+    use std::io::Write as _;
+
+    struct TermiosGuard(libc::termios);
+    impl Drop for TermiosGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.0);
+            }
+            eprintln!();
+        }
+    }
+
+    let mut original: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
+        anyhow::bail!("could not disable terminal echo for the API key");
+    }
+    let mut hidden = original;
+    hidden.c_lflag &= !libc::ECHO;
+    if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &hidden) } != 0 {
+        anyhow::bail!("could not disable terminal echo for the API key");
+    }
+    // Discard bytes pasted before echo was disabled. Otherwise a user who
+    // pastes the menu choice and key together can expose the queued key.
+    unsafe {
+        libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+    }
+    let _guard = TermiosGuard(original);
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+    let mut value = String::new();
+    std::io::stdin().read_line(&mut value)?;
+    Ok(value)
+}
+
+#[cfg(not(unix))]
+fn read_secret_line(_prompt: &str) -> Result<String> {
+    anyhow::bail!(
+        "secure interactive API-key entry is unavailable on this platform; \
+         set OPENCODE_API_KEY and restart grok"
+    )
+}
+
+async fn select_initial_provider_if_needed() -> Result<bool> {
+    use std::io::{IsTerminal as _, Write as _};
+
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Ok(true);
+    }
+
+    let raw_config = xai_grok_shell::config::load_effective_config_disk_only()
+        .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+    let agent_config = AgentConfig::new_from_toml_cfg(&raw_config)
+        .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+    let xai_connected = xai_grok_shell::auth::provider_cli::has_xai_provider_auth(&agent_config);
+    let openai_connected = xai_grok_shell::auth::provider_cli::provider_is_authenticated("openai");
+    let opencode_connected =
+        xai_grok_shell::auth::provider_cli::provider_is_authenticated("opencode-go");
+    if !needs_initial_provider_selection(xai_connected, openai_connected, opencode_connected) {
+        return Ok(true);
+    }
+
+    eprintln!("Choose a provider to start:");
+    eprintln!("  1. OpenAI (ChatGPT subscription)");
+    eprintln!("  2. OpenCode Go");
+    eprintln!("  3. xAI");
+    eprintln!("  q. Quit");
+
+    loop {
+        eprint!("Provider: ");
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer)? == 0 {
+            return Ok(false);
+        }
+        match parse_initial_provider_choice(&answer) {
+            Some(InitialProviderChoice::OpenAi) => {
+                xai_grok_shell::auth::provider_cli::login_openai_subscription(false).await?;
+                return Ok(true);
+            }
+            Some(InitialProviderChoice::OpencodeGo) => {
+                let key = read_secret_line("OpenCode Go API key: ")?;
+                xai_grok_shell::auth::provider_cli::login_opencode_go_with_key(&key).await?;
+                return Ok(true);
+            }
+            Some(InitialProviderChoice::Xai) => {
+                xai_grok_shell::auth::run_cli_login(&agent_config, false, false, false).await?;
+                return Ok(true);
+            }
+            Some(InitialProviderChoice::Quit) => return Ok(false),
+            None => eprintln!("Enter 1, 2, 3, or q."),
+        }
+    }
+}
 /// Apply headless args to an existing config, only overriding values that are
 /// explicitly set. This allows environment defaults to be preserved when
 /// specific args are not provided.
@@ -2118,6 +2219,9 @@ async fn async_main(args: PagerArgs) -> Result<()> {
         )
         .await;
     }
+    if !select_initial_provider_if_needed().await? {
+        return Ok(());
+    }
     enforce_version_policy_or_exit();
     let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
@@ -2390,6 +2494,7 @@ async fn signal_leaders_to_relaunch(installed_version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn version_output_writer_preserves_channel_aware_contract() {
         for (label, expected_suffix) in [

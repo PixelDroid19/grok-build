@@ -4,14 +4,22 @@ Grok supports several authentication methods, including interactive browser logi
 
 ---
 
-## Browser Login (Default)
+## First launch
 
-On first launch, Grok opens your browser to authenticate with grok.com:
+On an interactive first launch with no connected provider, Grok asks whether
+to use OpenAI, OpenCode Go, or xAI before starting the TUI:
 
 ```bash
 grok
 ```
 
+Scripts and headless invocations never wait on this selector. Connect a
+provider explicitly with `grok login --provider ...` before using headless
+mode.
+
+## xAI browser login
+
+Selecting xAI opens your browser to authenticate with grok.com.
 Grok stores credentials in `~/.grok/auth.json` and reuses them across sessions. Grok refreshes access tokens automatically in the background. When a token can't be refreshed, Grok prompts you to sign in again. Credentials without a server-provided expiry fall back to a 30-day lifetime.
 
 ### Credential storage
@@ -79,6 +87,9 @@ OpenCode Go uses its own API key and model catalog:
 export OPENCODE_API_KEY="..."
 grok login --provider opencode-go
 ```
+
+On first interactive launch, selecting OpenCode Go prompts for the key with
+terminal echo disabled.
 
 To avoid keeping the key in the environment:
 
