@@ -84,7 +84,7 @@ pub async fn login_opencode_go_with_key(key: &str) -> anyhow::Result<()> {
     super::store_provider_api_key(
         &crate::util::grok_home::grok_home(),
         OPENCODE_GO_API_KEY_SCOPE,
-        &key,
+        key,
     )?;
     let catalog = crate::agent::provider_catalog::load_opencode_go_catalog(
         &crate::util::grok_home::grok_home(),
